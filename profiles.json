@@ -1,0 +1,193 @@
+[
+  {
+    "Id": "e3ec8bf744a8fe283a37af3eff01a5a8",
+    "Name": "Xbox DNS",
+    "Enabled": true,
+    "Mode": "Doh",
+    "Servers": [
+      "111.88.96.54",
+      "111.88.96.55"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "https://xbox-dns.ru/dns-query",
+    "Note": "На сайте 22.10.2026: сервис временно недоступен. Проверяйте фактический результат."
+  },
+  {
+    "Id": "841faa65861c6e36c6688d2094054558",
+    "Name": "Bezmezhau",
+    "Enabled": true,
+    "Mode": "Doh",
+    "Servers": [
+      "181.215.40.49",
+      "31.58.216.201"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "https://dns.bezmezhau.com/dns-query",
+    "Note": ""
+  },
+  {
+    "Id": "45fb037af650b82daecc92c338090020",
+    "Name": "DNS-AI",
+    "Enabled": true,
+    "Mode": "Doh",
+    "Servers": [
+      "194.87.196.13",
+      "45.151.102.219",
+      "2a00:b700:5::3:62",
+      "2a12:5940:d4ef::219"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "https://dns.dns-ai.ru/dns-query",
+    "Note": "Провайдер сообщает: порт 53 закрыт; используйте DoH. Без открытого DNS fallback."
+  },
+  {
+    "Id": "7d944ef142cedb5394a5d34ca882a0ed",
+    "Name": "Xbox DNS (UDP/TCP)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "111.88.96.54",
+      "111.88.96.55"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "Сверено 22.10.2026: https://xbox-dns.ru/. На 22.10.2026 сайт предупреждает о временной недоступности. Обычный DNS без шифрования. Успех публичного HTTPS не подтверждает авторизованный Codex."
+  },
+  {
+    "Id": "67c906863ac4f756f8f42c7035ddd4a0",
+    "Name": "Bezmezhau (UDP/TCP)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "181.215.40.49",
+      "31.58.216.201"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "Сверено 22.10.2026: https://bezmezhau.com/. Обычный DNS без шифрования. Доступность проверяется с этого ПК. Успех публичного HTTPS не подтверждает авторизованный Codex."
+  },
+  {
+    "Id": "9bbc21a6a4d095d4deaebcce41687df5",
+    "Name": "Comss.one (DoH)",
+    "Enabled": true,
+    "Mode": "Doh",
+    "Servers": [
+      "195.133.25.16"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "https://dns.comss.one/dns-query",
+    "Note": "Сверено 22.10.2026: https://www.comss.ru/page.php?id=7315. Официально опубликованный bootstrap DoH. Фильтрация рекламы, трекеров и вредоносных доменов. Успех публичного HTTPS не подтверждает авторизованный Codex."
+  },
+  {
+    "Id": "cb272119b9c49dbefa033fd6bb25112a",
+    "Name": "Comss.one (DoH, резерв)",
+    "Enabled": true,
+    "Mode": "Doh",
+    "Servers": [
+      "83.220.169.155",
+      "212.109.195.93"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "https://dns.comss.one/dns-query",
+    "Note": "Сверено 22.10.2026: https://www.comss.ru/page.php?id=7315. Дополнительный вариант DoH через другие IP того же провайдера. Доступность HTTPS проверяется приложением; без перехода на открытый DNS при ошибке. Успех публичного HTTPS не подтверждает авторизованный Codex."
+  },
+  {
+    "Id": "11f4b140fb69f1402a081215f5b54a55",
+    "Name": "Comss.one (UDP/TCP)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "83.220.169.155",
+      "212.109.195.93"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "Сверено 22.10.2026: https://www.comss.ru/page.php?id=7315. Стандартные DNS-адреса. Фильтрация рекламы, трекеров и вредоносных доменов; без шифрования DNS. Успех публичного HTTPS не подтверждает авторизованный Codex."
+  },
+  {
+    "Id": "0ae6dc27b81e635ddd6cc1f3920feaf1",
+    "Name": "GeoHide (UDP/TCP)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "159.194.200.33",
+      "37.230.192.51"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "Сверено 22.10.2026: https://geohide.ru/. IP подтверждены официальной страницей https://status.dns.geohide.ru/en. Обычный DNS; чужие uptime-проценты не импортируются. Успех публичного HTTPS не подтверждает авторизованный Codex."
+  },
+  {
+    "Id": "167dfb96671d26c3d00d8016d92d189a",
+    "Name": "Dagami (DoH)",
+    "Enabled": true,
+    "Mode": "Doh",
+    "Servers": [
+      "193.233.244.38"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "https://dns.dagami.ru/dns-query",
+    "Note": "Сверено 22.10.2026: https://dns.dagami.ru/. Адрес опубликован в редакции от 21.10.2026. Фильтры; технические журналы соединений содержат домены, время и объём данных по сообщению провайдера. Успех публичного HTTPS не подтверждает авторизованный Codex."
+  },
+  {
+    "Id": "0303e052e09ee6556b5739827f9bfc57",
+    "Name": "Dagami (UDP/TCP)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "193.233.244.38"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "Сверено 22.10.2026: https://dns.dagami.ru/. Адрес от 21.10.2026. Фильтры рекламы/телеметрии; технические журналы соединений с доменами; без шифрования DNS. Успех публичного HTTPS не подтверждает авторизованный Codex."
+  },
+  {
+    "Id": "017aed0f146f3e197740b0311911159b",
+    "Name": "Zapret DNS (DoH)",
+    "Enabled": true,
+    "Mode": "Doh",
+    "Servers": [
+      "83.217.211.149"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "https://dns.zapret.moe/dns-query",
+    "Note": "Сверено 22.10.2026: https://dns.zapret.moe/. Публичный DNS проекта с отдельным списком сервисов; без фильтрации рекламы. Сторонние программы не устанавливаются. Успех публичного HTTPS не подтверждает авторизованный Codex."
+  },
+  {
+    "Id": "632d435d8696d07fef18b1007bfe2fa0",
+    "Name": "Zapret DNS (UDP/TCP)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "83.217.211.149"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "Сверено 22.10.2026: https://dns.zapret.moe/. Обычный DNS без шифрования и фильтрации рекламы. Это профиль DNS, программы Zapret не устанавливаются. Успех публичного HTTPS не подтверждает авторизованный Codex."
+  },
+  {
+    "Id": "49495bf679479b860e0eacd0434becf0",
+    "Name": "dns.malw.link (DoH)",
+    "Enabled": true,
+    "Mode": "Doh",
+    "Servers": [
+      "179.254.166.171"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "https://dns.malw.link/dns-query",
+    "Note": "Сверено 22.10.2026: https://info.dns.malw.link/setup. DoH опубликован для основного IP. Для 164.5.224.81 шифрование не заявлено: он оставлен только в обычном DNS-профиле. Включены фильтры. Успех публичного HTTPS не подтверждает авторизованный Codex."
+  },
+  {
+    "Id": "7673a33504ff7c7f74ebffc81430c66c",
+    "Name": "dns.malw.link (UDP/TCP)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "179.254.166.171",
+      "164.5.224.81"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "Сверено 22.10.2026: https://info.dns.malw.link/setup. Обычный DNS без шифрования. Включены фильтры рекламы, аналитики и телеметрии; отдельные сайты могут блокироваться. Успех публичного HTTPS не подтверждает авторизованный Codex."
+  }
+]

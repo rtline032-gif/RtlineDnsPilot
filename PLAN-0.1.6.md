@@ -1,0 +1,9 @@
+# RtlineDnsPilot 0.1.6
+
+Requested result: offer two automatic selection modes, most stable and fastest, and persist the chosen mode. Preserve every existing profile, measurement, history, country display, sharing setting, DNS control behavior and explicit manual/preferred override.
+
+1. Add validated AutoSelectionMode Stable/Fast and AppConfig.AutoSelection with Stable as the legacy/default value. A policy change must not change target/DNS context or clear measurements.
+2. Stable keeps reliability-first ranking. Fast ranks fresh successful channels by measured mean DNS+HTTPS response time, then successful-check ratio. It measures delay, not download bandwidth. Emergency failover retains three failures/two confirmed reserve successes. Optimization retains five consecutive successful rounds, five-minute dwell and a 20% latency improvement for Fast; it does not also require equal reliability. Preserve manual fixation and explicit preferred-channel precedence.
+3. UiBackend.SelectAutomaticAsync(mode) clears fixation/preference and saves/applies the chosen mode through the existing configuration flow. Old services must not silently ignore Fast: save the draft and explain the required update.
+4. Offer both modes from the Auto button, show the selected mode and checked menu item, and keep return-to-auto behavior consistent. Preserve controls during status polling, distinct state indicators and minimum-window layout. Show the waiting/decision reason instead of promising an immediate forced switch.
+5. Verify policy ranking, startup/emergency/optimization, freshness/dwell, JSON persistence and old-service draft handling; use fake service UI tests for selection, restored mode and no polling flicker. Run project checks sequentially, build 0.1.6 and audit allowlisted runtime/source archives with all 15 public profiles. Do not alter actual adapter DNS, install/update the real service or upload anything to Google Drive.
