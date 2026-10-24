@@ -2,7 +2,17 @@
 
 Бесплатная программа для Windows 10/11 x64: проверяет DNS и доступность выбранных HTTPS-сервисов, сравнивает каналы, сохраняет историю и может автоматически выбирать доступный DNS-профиль.
 
-**Версия 0.1.8 — ранний выпуск без цифровой подписи.** Подготовка заявки SignPath Foundation не означает, что фонд уже одобрил проект или подписал программу. Статус указан в [политике подписи](CODE_SIGNING.md).
+**Версия 0.1.10 — ранний выпуск без цифровой подписи.** Подготовка заявки SignPath Foundation не означает, что фонд уже одобрил проект или подписал программу. Статус указан в [политике подписи](CODE_SIGNING.md).
+
+## Скачать и обновить
+
+[Скачать RtlineDnsPilot 0.1.10 для Windows x64](https://github.com/rtline032-gif/RtlineDnsPilot/releases/download/v0.1.10/RtlineDnsPilot-0.1.10-win-x64.zip). Нужен .NET Desktop Runtime 10.0 x64. Распакуйте весь архив в одну папку.
+
+В 0.1.10 добавлена отдельная кнопка «Обновить программу»: она проверяет опубликованные выпуски этого репозитория, скачивает более новую версию и проверяет SHA-256, состав ZIP и версию программы. Помощник ждёт закрытия прежнего окна и запускает новое. Пользовательские каналы и история сохраняются. Если уже установлена служба, её обновление потребует разрешения Windows и завершится режимом наблюдения, с выключенным управлением DNS.
+
+Для версий до 0.1.10 нужен один ручной переход на этот архив: в старом приложении кнопки обновления нет. Новая версия также сохраняет исправления 0.1.9 для восстановления DNS после тайм-аута и обработки позднего ответа отключившемуся DNS-клиенту.
+
+Локально пройдены 43 проверки механизма обновления и три изолированных запуска GUI. Полный C# прогон: 427 PASS и один ранее существовавший сбой CurrentUser DPAPI в ограниченном профиле. Реальные установка службы, UAC и изменение DNS физического адаптера при этих проверках не выполнялись. Состояние проверки на GitHub видно во вкладке Actions.
 
 ## Возможности
 
@@ -58,4 +68,4 @@ C# / .NET 10 / Windows Forms. Исходники приёмника Google Apps 
 
 ## English overview
 
-RtlineDnsPilot is an open-source Windows DNS monitor and local DNS forwarder. It probes public DNS and HTTPS reachability through configurable upstream profiles, records history, and supports automatic selection by stability or latency. System DNS management is explicitly enabled by the user and requires Windows elevation. Public probes do not verify authenticated AI sessions or VPN tunnels. Version 0.1.8 is unsigned; SignPath Foundation approval has not been obtained. See [privacy](PRIVACY.md), [code-signing status](CODE_SIGNING.md), and [MIT license](LICENSE).
+RtlineDnsPilot is an open-source Windows DNS monitor and local DNS forwarder. It probes public DNS and HTTPS reachability through configurable upstream profiles, records history, and supports automatic selection by stability or latency. System DNS management is explicitly enabled by the user and requires Windows elevation. Public probes do not verify authenticated AI sessions or VPN tunnels. Version 0.1.10 is unsigned; SignPath Foundation approval has not been obtained. See [privacy](PRIVACY.md), [code-signing status](CODE_SIGNING.md), and [MIT license](LICENSE).

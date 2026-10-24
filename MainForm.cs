@@ -6,6 +6,10 @@ public sealed class MainForm : Form
 {
     private readonly UiBackend _backend;
     private readonly DnsShareClient _shareClient;
+    private readonly ApplicationUpdateClient _applicationUpdates;
+    private readonly ApplicationUpdateLauncher _updateLauncher;
+    private string? _updateFeedback;
+    private string? _startupUpdateWarning;
     private CancellationTokenSource? _shareCancellation;
     private string? _shareFeedback;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 2500 };
@@ -18,6 +22,7 @@ public sealed class MainForm : Form
     private readonly Button _probe = MakeButton("Проверить сейчас");
     private readonly Button _enable = MakeButton("Включить управление DNS");
     private readonly Button _updateService = MakeButton("Обновить службу");
+    private readonly Button _updateApplication = MakeButton("Обновить программу");
     private readonly Button _reconnect = MakeButton("Проверить связь");
     private readonly Button _disable = MakeButton("Отключить управление");
     private readonly Button _restore = MakeButton("Восстановить DNS");
@@ -102,11 +107,15 @@ public sealed class MainForm : Form
 
     internal MainForm(UiBackend backend) : this(backend, new DnsShareClient()) { }
 
-    internal MainForm(UiBackend backend, DnsShareClient shareClient)
+    internal MainForm(UiBackend backend, DnsShareClient shareClient) : this(backend,shareClient,new ApplicationUpdateClient(),new ApplicationUpdateLauncher()) { }
+
+    internal MainForm(UiBackend backend, DnsShareClient shareClient,ApplicationUpdateClient applicationUpdates,ApplicationUpdateLauncher updateLauncher)
     {
         _backend = backend;
         _shareClient = shareClient;
-        Text = "RtlineDnsPilot — каналы DNS и проверка HTTPS";
+        _applicationUpdates=applicationUpdates;
+        _updateLauncher=updateLauncher;
+        Text = "RtlineDnsPilot " + AppVersion.Current + " — каналы DNS и проверка HTTPS";
         Icon = SystemIcons.Application;
         Font = new Font("Segoe UI", 9F);
         AutoScaleDimensions = new SizeF(96F, 96F);
@@ -140,7 +149,8 @@ public sealed class MainForm : Form
         _share.FlatAppearance.MouseOverBackColor = Color.FromArgb(203, 236, 221);
         _share.FlatAppearance.MouseDownBackColor = Color.FromArgb(180, 221, 201);
         _share.Margin = new Padding(10, 0, 0, 6);
-        operationBar.Controls.AddRange([_monitor, _probe, _reconnect, _enable, _updateService, _disable, _restore, _automaticDns, _share]);
+        _updateApplication.Name="UpdateApplication";
+        operationBar.Controls.AddRange([_monitor, _probe, _reconnect, _enable, _updateService, _disable, _restore, _automaticDns, _updateApplication, _share]);
         root.Controls.Add(operationBar, 0, 1);
         var indicators = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Margin = new Padding(0, 0, 0, 9) };
         var progressSpace = new Panel { Width = 68, Height = 28, Margin = new Padding(0) };
@@ -180,6 +190,7 @@ public sealed class MainForm : Form
         _tips.SetToolTip(_disable, "Отключить управление и вернуть исходные DNS. Если служба не отвечает, появится отдельное подтверждение запуска помощника восстановления и окно разрешения Windows.");
         _tips.SetToolTip(_reconnect, "Повторить запрос состояния службы сейчас. Этот запрос не меняет DNS и не запрашивает права администратора.");
         _tips.SetToolTip(_automaticDns, "После отдельного подтверждения и UAC: отключить управление RtlineDnsPilot и получать DNS выбранного адаптера автоматически от сети. Это заменит ручные DNS.");
+        _tips.SetToolTip(_updateApplication,"Скачать проверенный новый выпуск из официального GitHub и перезапустить программу. Каналы и история сохранятся. Если служба установлена, Windows запросит разрешение на её обновление; управление DNS после обновления будет выключено.");
         _tips.SetToolTip(_prefer, "Предпочтительный канал используется, пока доступен. При устойчивом отказе сохраняется аварийное переключение.");
         _tips.SetToolTip(_auto, "Выбрать приоритет автовыбора и снять ручную фиксацию или предпочтение.\r\nСамый быстрый — минимальная средняя задержка DNS + HTTPS среди каналов, у которых доступны все выбранные объекты. Это время отклика, не Мбит/с.\r\nСамый стабильный — сначала доля успешных проверок, при равенстве — задержка.\r\nДля обычной оптимизации нужны 5 успешных проверок подряд и 5 минут на текущем канале. При сравнении задержек нужен выигрыш не менее 20%. Аварийное переключение сохраняется.");
         _tips.SetToolTip(_grid, "Правая кнопка: зафиксировать канал, вернуться к авто или удалить. Синий — активный канал, зелёный/красный — свежая доступность остальных. Ошибки активного канала остаются красными. Статистика учитывает текущий набор сервисов.");
@@ -216,6 +227,7 @@ public sealed class MainForm : Form
         _probe.Click += async (_, _) => await RunAsync(() => _backend.ProbeAsync(), _backend.DnsStateUnknown ? "Разовая локальная проверка" : "Проверка каналов");
         _reconnect.Click += async (_, _) => await RunAsync(() => _backend.ReconnectAsync(), "Проверка связи со службой");
         _enable.Click += async (_, _) => await EnableAsync();
+        _updateApplication.Click += async (_, _) => await UpdateApplicationAsync();
         _updateService.Click += async (_, _) =>
         {
             var repair = _backend.DnsStateUnknown;
@@ -503,7 +515,7 @@ public sealed class MainForm : Form
             if (!IsDisposed && !_busy)
             {
                 UpdateView();
-                _activity.Text = _shareFeedback ?? "Обновлено " + DateTime.Now.ToString("HH:mm:ss");
+                _activity.Text = _updateFeedback ?? _shareFeedback ?? "Обновлено " + DateTime.Now.ToString("HH:mm:ss");
             }
         }
     }
@@ -514,6 +526,7 @@ public sealed class MainForm : Form
         CancelHistoryRead();
         _busy = true;
         _shareFeedback = null;
+        _updateFeedback = null;
         _activity.ForeColor = SystemColors.ControlText;
         _activity.Text = activity + (_refreshing ? " · ожидание текущего запроса…" : "…");
         UpdateButtons();
@@ -530,7 +543,7 @@ public sealed class MainForm : Form
             if (!IsDisposed)
             {
                 UpdateView();
-                _activity.Text = _shareFeedback ?? "Обновлено " + DateTime.Now.ToString("HH:mm:ss");
+                _activity.Text = _updateFeedback ?? _shareFeedback ?? "Обновлено " + DateTime.Now.ToString("HH:mm:ss");
             }
         }
     }
@@ -672,7 +685,7 @@ public sealed class MainForm : Form
         else if (status.ServiceConnected && status.DnsRecoveryPending)
         {
             _headline.Text = "Восстановление DNS не завершено";
-            _description.Text = "Текущее состояние DNS адаптера не подтверждено. Повторите «Восстановить DNS» после устранения указанной ошибки; новое включение управления заблокировано.";
+            _description.Text = "Нажмите «Восстановить DNS»: программа проверит фактические настройки и при необходимости применит резервный способ Windows. Исходные DNS сохранены; новое управление заблокировано до подтверждённого восстановления.";
         }
         else if (_backend.RecoveryConfirmed)
         {
@@ -697,6 +710,7 @@ public sealed class MainForm : Form
                 : "Автоматические проверки остановлены. Доступны запуск наблюдения и разовая проверка; системные сетевые настройки не применяются.";
         }
         var messages = new List<string>();
+        if(!string.IsNullOrWhiteSpace(_startupUpdateWarning)) messages.Add(_startupUpdateWarning);
         if (status.AllUnavailable && status.Config.Profiles.Any(p => p.Enabled)) messages.Add("Все включённые каналы недоступны по последним проверкам. " + (status.Monitoring ? "Проверки продолжаются." : "Проверки сейчас на паузе."));
         if (!string.IsNullOrWhiteSpace(status.Error)) messages.Add(status.Error);
         if (_backend.DnsStateUnknown && !string.IsNullOrWhiteSpace(_backend.ConnectionError)) messages.Add(_backend.ConnectionError);
@@ -935,6 +949,7 @@ public sealed class MainForm : Form
         _enable.Text = status.SystemDnsManaged && !_backend.DnsStateUnknown ? "✓ Управление DNS включено" : "Включить управление DNS";
         _updateService.Visible = _backend.ServiceUpdateAvailable;
         _updateService.Enabled = !_busy;
+        _updateApplication.Enabled = !_busy;
         _updateService.Text = _backend.DnsStateUnknown ? "Исправить службу" : "Обновить службу";
         _tips.SetToolTip(_updateService, _backend.DnsStateUnknown
             ? "Помощник с разрешением Windows восстановит или обновит файлы службы и выключит управление DNS. Каналы и история сохранятся; управление затем можно включить отдельно."
@@ -1332,6 +1347,54 @@ public sealed class MainForm : Form
         Close();
     }
 
+    private async Task UpdateApplicationAsync()
+    {
+        if(_smoke || _busy) return;
+        await RunAsync(async () =>
+        {
+            if(_settingsDirty)
+                throw new InvalidOperationException("Есть несохранённые настройки. Сначала нажмите «Применить настройки» на вкладке «Проверка и сеть», затем повторите обновление программы.");
+            _activity.Text="Проверка новых версий на GitHub…";
+            var release=await _applicationUpdates.CheckAsync(Version.Parse(AppVersion.Current));
+            if(release is null)
+            {
+                if(_backend.ServiceUpdateAvailable)
+                {
+                    _activity.Text="Программа актуальна. Обновление установленной службы…";
+                    await _backend.UpdateServiceAsync();
+                    _startupUpdateWarning=null;
+                    _updateFeedback="Программа "+AppVersion.Current+" актуальна · служба обновлена · управление DNS выключено";
+                }
+                else _updateFeedback="Новых версий нет · установлена "+AppVersion.Current;
+                AddUiEvent(_updateFeedback,"update");
+                return;
+            }
+            var progress=new Progress<ApplicationUpdateProgress>(step =>
+            {
+                if(IsDisposed || _reallyClose) return;
+                _activity.Text=(release.IsPrerelease?"Тестовый выпуск · ":"")+step.Message+(step.Total is >0?" · "+Math.Clamp(100L*step.Completed/step.Total.Value,0,100)+"%":"");
+            });
+            var update=await _applicationUpdates.DownloadAsync(release,ApplicationUpdateLauncher.DefaultRoot,progress);
+            _activity.Text="Подготовка обновления до "+release.Version+"…";
+            var request=await _updateLauncher.PrepareAsync(update,AppContext.BaseDirectory,_backend.DataDirectory,_backend.ServiceInstalled);
+            _updateLauncher.StartCompletionWorker(request);
+            await _updateLauncher.WaitForWorkerReadyAsync(request);
+            _timer.Stop();
+            CancelHistoryRead();
+            await _backend.DisposeAsync();
+            _backendDisposed=true;
+            _reallyClose=true;
+            Close();
+        },"Обновление программы");
+    }
+
+    internal void ShowUpdateWarning(string message)
+    {
+        _startupUpdateWarning=message.Length>1200?message[..1200]:message;
+        AddUiEvent(_startupUpdateWarning,"warning");
+        UpdateView();
+    }
+
     /// <summary>Renders the initial window without service RPC, monitoring, installation or DNS changes.</summary>
     public void RenderSmoke(string path)
     {
@@ -1431,6 +1494,7 @@ public sealed class MainForm : Form
             CancelHistoryRead();
             _shareCancellation?.Cancel();
             _shareClient.Dispose();
+            _applicationUpdates.Dispose();
             _timer.Dispose();
             _tray.Visible = false;
             _tray.Dispose();

@@ -232,8 +232,9 @@ public sealed class MonitorEngine : IAsyncDisposable
         {
             if(_dns!.Managed && _relay is { IsRunning:false })
             {
+                var failure = _relay.LastFailure;
                 await RestoreRelayAsync();
-                lock(_state) _error="Локальный DNS-посредник остановился; исходный DNS восстановлен.";
+                lock(_state) _error="Локальный DNS-посредник остановился; исходный DNS восстановлен." + (failure is null ? "" : " Причина: " + failure);
                 AddEvent("error",_error!);
             }
             else if(_allDownRounds>=3 && _dns.Managed && !MonitoringTargets.ManualIsActive(_config,DateTimeOffset.UtcNow))

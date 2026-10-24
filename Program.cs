@@ -35,9 +35,30 @@ internal static class Program
                 else smoke.RenderSmoke(path);
                 return 0;
             }
+            if(args.Contains("--complete-application-update"))
+            {
+                using var updater=new ApplicationUpdateProgressForm(Value("--complete-application-update")??throw new ArgumentException("Не задано задание обновления."));
+                Application.Run(updater);
+                return updater.ExitCode;
+            }
+            var launcher=new ApplicationUpdateLauncher();
+            string? warning=Value("--update-warning");
+            var startupAck=Value("--update-startup-ack");
+            if(startupAck is null && !args.Contains("--skip-update-route"))
+            {
+                if(launcher.TryLaunchCurrent(args,out var routeWarning)) return 0;
+                warning??=routeWarning;
+            }
             using var mutex=new Mutex(true,@"Local\NetPilot.Ui."+System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value,out bool first);
             if(!first) { MessageBox.Show("RtlineDnsPilot уже открыт. Найдите значок в области уведомлений.","RtlineDnsPilot"); return 0; }
-            Application.Run(new MainForm(Value("--data-dir")??AppPaths.LocalData)); return 0;
+            using var form=new MainForm(Value("--data-dir")??AppPaths.LocalData);
+            if(warning is not null) form.ShowUpdateWarning(warning);
+            if(startupAck is not null) form.Shown+=(_,_)=>
+            {
+                try { launcher.AcknowledgeStartup(startupAck); }
+                catch { form.Dispose(); } // The worker observes missing ack/exit and restores the previous launch pointer.
+            };
+            Application.Run(form); return 0;
         }
         catch(Exception ex)
         {

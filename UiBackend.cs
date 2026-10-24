@@ -48,6 +48,7 @@ public sealed class UiBackend : IAsyncDisposable
     private AppStatus? _lastServiceStatus;
 
     public AppStatus Status { get; private set; }
+    internal string DataDirectory=>Path.GetFullPath(_dataDirectory);
     public bool ServiceConnected => _connected;
     public bool ServiceInstalled => _service.IsInstalled;
     public DateTimeOffset? LastServiceContact {get;private set;}

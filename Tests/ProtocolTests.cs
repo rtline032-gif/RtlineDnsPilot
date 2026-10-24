@@ -211,6 +211,55 @@ public static class ProtocolTests
             using var replacementTcp = new TcpListener(IPAddress.Loopback, port); replacementTcp.Start();
             using var replacementUdp = new UdpClient(new IPEndPoint(IPAddress.Loopback, port));
         });
+        await Test("Relay survives a late UDP reply after its local client closes", async () =>
+        {
+            using var upstream = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+            using var transport = new DnsTransport();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            var firstReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var firstSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var serve = Task.Run(async () =>
+            {
+                var request = await upstream.ReceiveAsync(deadline.Token);
+                firstReceived.SetResult();
+                await releaseFirst.Task.WaitAsync(deadline.Token);
+                await upstream.SendAsync(TxtAnswer(request.Buffer), request.RemoteEndPoint, deadline.Token);
+                firstSent.SetResult();
+                await ServeOne(upstream, TxtAnswer, deadline.Token);
+            });
+            try
+            {
+                await using var relay = new DnsRelay(transport, () => LocalProfile(Port(upstream)));
+                var port = await StartRelayFixtureAsync(relay, false, deadline.Token);
+                using (var abandoned = new UdpClient(AddressFamily.InterNetwork))
+                {
+                    abandoned.Connect(IPAddress.Loopback, port);
+                    await abandoned.SendAsync(DnsWire.Query("abandoned.test", 16), deadline.Token);
+                    await firstReceived.Task.WaitAsync(deadline.Token);
+                }
+                // The answer arrives only after the client port is closed. Windows may
+                // report its ICMP Port Unreachable on the listener's next receive.
+                releaseFirst.SetResult();
+                await firstSent.Task.WaitAsync(deadline.Token);
+                await Task.Delay(250, deadline.Token);
+                Require(relay.IsRunning, "One closed UDP client stopped the shared DNS relay. " + relay.LastFailure);
+                using var healthy = new UdpClient(AddressFamily.InterNetwork);
+                healthy.Connect(IPAddress.Loopback, port);
+                var query = DnsWire.Query("healthy.test", 16);
+                await healthy.SendAsync(query, deadline.Token);
+                var answer = (await healthy.ReceiveAsync(deadline.Token)).Buffer;
+                DnsWire.ValidateResponse(query, answer);
+                Require(answer[^1] == (byte)'k' && relay.IsRunning, "A new UDP client could not use the relay after a late reply.");
+                await serve;
+            }
+            finally
+            {
+                deadline.Cancel();
+                try { await serve; }
+                catch (OperationCanceledException) when (deadline.IsCancellationRequested) { }
+            }
+        });
         await Test("Relay forwards over IPv6 loopback UDP and TCP", async () =>
         {
             if (!Socket.OSSupportsIPv6) throw new PlatformNotSupportedException("IPv6 is required for this test");

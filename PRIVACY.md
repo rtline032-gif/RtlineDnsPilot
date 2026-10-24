@@ -39,3 +39,21 @@
 Configuration, adapter recovery state, measurements, country evidence and event history are stored locally. DNS providers receive DNS queries; selected public HTTPS endpoints receive anonymous reachability requests. Networks and remote services can observe connection metadata, including the source IP available to them. The app does not sign in to monitored services.
 
 The optional **Share DNS** button sends only eligible additional public DNS settings and ChatGPT/Gemini public-check flags to the project owner's Google Apps Script/Drive catalogue. It does not upload local names, device identifiers, adapter settings, custom monitoring URLs, country history or logs. Source IP is not a JSON field, but Google can observe it at the transport layer. Shared settings may remain in the catalogue and be copied by its readers; no guaranteed removal period is specified. There is no background catalogue upload, advertising analytics or automatic log upload.
+
+## Обновление программы, версия 0.1.10
+
+Кнопка «Обновить программу» обращается к API GitHub и серверам скачивания
+официального репозитория rtline032-gif/RtlineDnsPilot. GitHub получает обычные
+сведения HTTPS-соединения, включая доступный ему IP и строку приложения с
+версией. Каналы, объекты проверок, журналы, имя компьютера и данные аккаунтов
+в запрос обновления не передаются; авторизация GitHub не используется.
+
+Приложение скачивает публичный ZIP и проверяет его SHA-256. Прежняя программа,
+кеш новых версий, контрольные суммы, указатель выбранной версии, задания
+перезапуска и путь к существующей папке данных сохраняются локально в
+%LOCALAPPDATA%\NetPilot\application-updates. При обычном запуске используется
+только уже одобренная локальная версия; фоновой сетевой проверки нет.
+
+Обновление установленной службы требует разрешения Windows и заканчивается
+режимом наблюдения с выключенным управлением DNS. Исходные сетевые настройки
+и пользовательские данные не входят в скачиваемый или распространяемый пакет.

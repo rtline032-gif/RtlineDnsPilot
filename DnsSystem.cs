@@ -39,6 +39,17 @@ public interface IDnsBackend
     Task ApplyAsync(string adapterId, DnsFamilySnapshot expected, DnsFamilySnapshot desired);
 }
 
+public interface IDnsRecoveryBackend : IDnsBackend
+{
+    Task ApplyRecoveryAsync(string adapterId, DnsFamilySnapshot expected, DnsFamilySnapshot desired);
+}
+
+internal sealed class DnsCommandStillRunningException(string message) : IOException(message)
+{
+    public required int ProcessId { get; init; }
+    public required long StartUtcTicks { get; init; }
+}
+
 public sealed class DnsSessionManager
 {
     private readonly string journalPath;
@@ -85,7 +96,7 @@ public sealed class DnsSessionManager
             }
             var journal = new DnsJournal
             {
-                Version = 1, SessionId = Guid.NewGuid().ToString("D"), CreatedUtc = DateTimeOffset.UtcNow,
+                Version = 2, SessionId = Guid.NewGuid().ToString("D"), CreatedUtc = DateTimeOffset.UtcNow,
                 Original = JsonData.Clone(original), Operation = operation
             };
             if (operation == DnsOperation.Automatic && new[] { original.IPv4, original.IPv6 }.Where(x => x.Enabled).All(x => x.Source == DnsSource.Dhcp)) return;
@@ -120,6 +131,11 @@ public sealed class DnsSessionManager
             catch (Exception activationError)
             {
                 managed = false;
+                if (activationError is DnsCommandStillRunningException running)
+                {
+                    SavePendingWriter(journal, running);
+                    throw;
+                }
                 if (HasJournal || requiresJournal)
                 {
                     try { await RestoreCoreAsync(); }
@@ -162,33 +178,84 @@ public sealed class DnsSessionManager
         catch (Exception e) when (e is not UnauthorizedAccessException)
         { throw new InvalidDataException("Журнал DNS повреждён или имеет неподдерживаемый формат. Он сохранён, сеть не изменена.", e); }
         managed = false;
+        if (journal.PendingWriterPid is int pendingPid && journal.PendingWriterStartUtcTicks is long pendingStart)
+        {
+            try
+            {
+                using var writer = Process.GetProcessById(pendingPid);
+                if (!writer.HasExited && writer.StartTime.ToUniversalTime().Ticks == pendingStart)
+                    throw new DnsCommandStillRunningException("Предыдущая системная команда DNS ещё работает. Новые записи заблокированы до её завершения; журнал сохранён.")
+                    { ProcessId = pendingPid, StartUtcTicks = pendingStart };
+            }
+            catch (ArgumentException) { } // The old PID no longer exists.
+            journal.PendingWriterPid = null; journal.PendingWriterStartUtcTicks = null;
+            Save(journal);
+        }
         if (journal.Finished) { DeleteCompletedJournal(); return; }
         var original = journal.Original!;
         var current = await ReadValidatedAsync(original.AdapterId);
 
         // Preflight every still-owned family before making any restoration write.
         foreach (var family in new[] { DnsFamily.IPv6, DnsFamily.IPv4 }.Where(x => Touched(journal, x)))
-            RequireRestorable(DnsState.Family(current, family), DnsState.Family(original, family), journal.Operation);
+            RequireRestorable(DnsState.Family(current, family), DnsState.Family(original, family), journal.Operation, RestorationStarted(journal, family));
 
+        var failures = new List<Exception>();
         foreach (var family in new[] { DnsFamily.IPv6, DnsFamily.IPv4 }.Where(x => Touched(journal, x)))
         {
-            current = await ReadValidatedAsync(original.AdapterId);
-            var before = DnsState.Family(current, family);
-            var saved = DnsState.Family(original, family);
-            RequireRestorable(before, saved, journal.Operation);
-            if (!DnsState.SameConfiguration(before, saved))
+            try
             {
-                await backend.ApplyAsync(original.AdapterId, before, JsonData.Clone(saved));
                 current = await ReadValidatedAsync(original.AdapterId);
+                var saved = DnsState.Family(original, family);
+                RequireRestorable(DnsState.Family(current, family), saved, journal.Operation, RestorationStarted(journal, family));
+                if (!DnsState.Verified(current, saved))
+                {
+                    // Record ownership of the ordered prefixes netsh can leave behind.
+                    // A later recovery never treats an unrelated partial list as ours.
+                    if (family == DnsFamily.IPv4) journal.IPv4RestorationStarted = true;
+                    else journal.IPv6RestorationStarted = true;
+                    journal.Version = 2;
+                    Save(journal);
+                    await RestoreFamilyAsync(journal, current, saved);
+                }
+                SetTouched(journal, family, false);
+                Save(journal);
             }
-            if (!DnsState.Verified(current, saved)) throw new IOException("Не подтверждено восстановление действующего DNS " + family + ". Журнал сохранён.");
-            // Once restored, this family no longer belongs to this transaction.
-            SetTouched(journal, family, false);
-            Save(journal);
+            catch (DnsCommandStillRunningException ex)
+            { SavePendingWriter(journal, ex); throw; }
+            catch (Exception ex)
+            { failures.Add(new IOException(family + ": " + ex.Message, ex)); }
         }
+        if (failures.Count != 0)
+            throw new AggregateException("DNS восстановлен не полностью. Для оставшихся семейств сохранены исходные настройки; «Восстановить DNS» повторит проверку и резервный способ Windows.", failures);
         journal.Finished = true;
         Save(journal);
         DeleteCompletedJournal();
+    }
+
+    private async Task RestoreFamilyAsync(DnsJournal journal, AdapterDnsSnapshot current, DnsFamilySnapshot desired)
+    {
+        string id = journal.Original!.AdapterId;
+        Exception primaryError = new IOException("Настроенные DNS уже совпадают с исходными, но действующие DNS не подтверждены.");
+        if (!DnsState.SameConfiguration(DnsState.Family(current, desired.Family), desired))
+        {
+            try { await backend.ApplyAsync(id, DnsState.Family(current, desired.Family), JsonData.Clone(desired)); }
+            catch (Exception ex) { primaryError = ex; }
+        }
+        if (primaryError is DnsCommandStillRunningException) throw primaryError;
+        // A process timeout does not prove that Windows failed to commit the change.
+        current = await ReadValidatedAsync(id);
+        if (DnsState.Verified(current, desired)) return;
+        var beforeFallback = DnsState.Family(current, desired.Family);
+        RequireRestorable(beforeFallback, desired, journal.Operation, restorationStarted: true);
+        if (backend is not IDnsRecoveryBackend recovery) throw primaryError;
+        Exception? fallbackError = null;
+        try { await recovery.ApplyRecoveryAsync(id, JsonData.Clone(beforeFallback), JsonData.Clone(desired)); }
+        catch (Exception ex) { fallbackError = ex; }
+        if (fallbackError is DnsCommandStillRunningException) throw fallbackError;
+        current = await ReadValidatedAsync(id);
+        if (DnsState.Verified(current, desired)) return;
+        throw new AggregateException("Основной и резервный способы Windows не подтвердили восстановление DNS " + desired.Family + ". Журнал сохранён.",
+            primaryError, fallbackError ?? new IOException("Резервная команда завершилась без подтверждённого изменения действующего DNS."));
     }
 
     private async Task<AdapterDnsSnapshot> ReadValidatedAsync(string id)
@@ -200,20 +267,33 @@ public sealed class DnsSessionManager
     }
     private static DnsFamilySnapshot Target(DnsOperation operation, DnsFamily family) => operation == DnsOperation.Relay
         ? DnsState.Loopback(family) : new() { Family = family, Enabled = true, Source = DnsSource.Dhcp, Servers = [], EffectiveServers = [] };
-    private static void RequireRestorable(DnsFamilySnapshot current, DnsFamilySnapshot original, DnsOperation operation)
+    private static void RequireRestorable(DnsFamilySnapshot current, DnsFamilySnapshot original, DnsOperation operation, bool restorationStarted = false)
     {
-        if (!DnsState.SameConfiguration(current, original) && !DnsState.SameConfiguration(current, Target(operation, original.Family)))
+        if (!DnsState.SameConfiguration(current, original) && !DnsState.SameConfiguration(current, Target(operation, original.Family))
+            && !(restorationStarted && DnsState.IsOrderedStaticPrefix(current, original)))
             throw new InvalidOperationException("Конфликт DNS " + original.Family + ": текущее состояние не совпадает с исходным или применённым NetPilot. Сторонняя настройка и журнал сохранены.");
     }
     private void Save(DnsJournal journal) => AtomicStore.Write(journalPath, journal, protectFile);
+    private void SavePendingWriter(DnsJournal journal, DnsCommandStillRunningException writer)
+    {
+        journal.Version = 2;
+        journal.PendingWriterPid = writer.ProcessId;
+        journal.PendingWriterStartUtcTicks = writer.StartUtcTicks;
+        Save(journal);
+    }
     private static bool Touched(DnsJournal journal, DnsFamily family) => family == DnsFamily.IPv4 ? journal.IPv4Touched : journal.IPv6Touched;
+    private static bool RestorationStarted(DnsJournal journal, DnsFamily family) => family == DnsFamily.IPv4 ? journal.IPv4RestorationStarted : journal.IPv6RestorationStarted;
     private static void SetTouched(DnsJournal journal, DnsFamily family, bool value)
     { if (family == DnsFamily.IPv4) journal.IPv4Touched = value; else journal.IPv6Touched = value; }
     private static void ValidateJournal(DnsJournal journal)
     {
-        if (journal.Version != 1 || !Enum.IsDefined(journal.Operation) || !Guid.TryParse(journal.SessionId, out _) || journal.CreatedUtc == default || journal.Original == null)
+        if (journal.Version is not (1 or 2) || !Enum.IsDefined(journal.Operation) || !Guid.TryParse(journal.SessionId, out _) || journal.CreatedUtc == default || journal.Original == null)
             throw new InvalidDataException("Не хватает обязательных полей журнала.");
         DnsState.Validate(journal.Original);
+        if ((journal.PendingWriterPid is null) != (journal.PendingWriterStartUtcTicks is null)
+            || journal.PendingWriterPid is <= 0 || journal.PendingWriterStartUtcTicks is <= 0
+            || journal.PendingWriterStartUtcTicks > DateTime.MaxValue.Ticks)
+            throw new InvalidDataException("Некорректная запись незавершённой системной команды DNS.");
         if ((journal.IPv4Touched && !journal.Original.IPv4.Enabled) || (journal.IPv6Touched && !journal.Original.IPv6.Enabled)
             || (journal.Finished && (journal.IPv4Touched || journal.IPv6Touched))) throw new InvalidDataException("Неверные флаги семей в журнале DNS.");
     }
@@ -236,6 +316,11 @@ public sealed class DnsSessionManager
         [JsonRequired] public bool IPv4Touched { get; set; }
         [JsonRequired] public bool IPv6Touched { get; set; }
         [JsonRequired] public bool Finished { get; set; }
+        // Optional in legacy journals. A prefix is owned only after a durable restore attempt.
+        public bool IPv4RestorationStarted { get; set; }
+        public bool IPv6RestorationStarted { get; set; }
+        public int? PendingWriterPid { get; set; }
+        public long? PendingWriterStartUtcTicks { get; set; }
         // Missing only in legacy v1 relay journals.
         public DnsOperation Operation { get; set; } = DnsOperation.Relay;
     }
@@ -250,11 +335,16 @@ internal static class DnsState
         return new() { Family = family, Enabled = true, Source = DnsSource.Static, Servers = [address], EffectiveServers = [address] };
     }
     public static bool SameConfiguration(DnsFamilySnapshot a, DnsFamilySnapshot b) => a.Family == b.Family && a.Enabled == b.Enabled && a.Source == b.Source && EqualAddresses(a.Servers, b.Servers);
+    public static bool IsOrderedStaticPrefix(DnsFamilySnapshot actual, DnsFamilySnapshot desired) => actual.Family == desired.Family && actual.Enabled == desired.Enabled
+        && actual.Source == DnsSource.Static && desired.Source == DnsSource.Static && actual.Servers.Length > 0 && actual.Servers.Length < desired.Servers.Length
+        && EqualAddresses(actual.Servers, desired.Servers.Take(actual.Servers.Length).ToArray());
     public static bool Verified(AdapterDnsSnapshot snapshot, DnsFamilySnapshot desired)
     {
         var actual = Family(snapshot, desired.Family);
         // DHCP owns its lease and observed addresses; restoring DHCP must not pin an obsolete lease.
-        return SameConfiguration(actual, desired) && (desired.Source == DnsSource.Dhcp || !snapshot.Up || EqualAddresses(actual.EffectiveServers, desired.Servers));
+        return SameConfiguration(actual, desired) && (desired.Source == DnsSource.Dhcp
+            ? !actual.EffectiveServers.Any(x => IPAddress.IsLoopback(IPAddress.Parse(x)))
+            : !snapshot.Up || EqualAddresses(actual.EffectiveServers, desired.Servers));
     }
     private static bool EqualAddresses(string[] a, string[] b) => a.Length == b.Length && a.Zip(b).All(x => IPAddress.Parse(x.First).Equals(IPAddress.Parse(x.Second)));
     public static void Validate(AdapterDnsSnapshot snapshot)
@@ -301,7 +391,7 @@ public static class AdapterCatalog
     }
 }
 
-public sealed class WinDnsBackend : IDnsBackend
+public sealed class WinDnsBackend : IDnsRecoveryBackend
 {
     public Task<AdapterDnsSnapshot> ReadAsync(string adapterId)
     {
@@ -343,6 +433,53 @@ public sealed class WinDnsBackend : IDnsBackend
             }
             await VerifyAsync(adapterId, previous);
         }
+    }
+
+    public async Task ApplyRecoveryAsync(string adapterId, DnsFamilySnapshot expected, DnsFamilySnapshot desired)
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        if (!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
+            throw new UnauthorizedAccessException("Для восстановления DNS нужно разрешение администратора Windows.");
+        DnsState.Validate(expected); DnsState.Validate(desired);
+        if (!expected.Enabled || !desired.Enabled || expected.Family != desired.Family)
+            throw new InvalidOperationException("Изменение привязки протокола запрещено.");
+        var current = await ReadAsync(adapterId);
+        if (!DnsState.SameConfiguration(DnsState.Family(current, desired.Family), expected))
+            throw new InvalidOperationException("Конфликт перед резервным восстановлением: сторонняя настройка DNS сохранена.");
+        var nic = WindowsAdapters.Resolve(adapterId);
+        int index = WindowsAdapters.Index(nic, desired.Family);
+        string moduleRoot = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "Modules");
+        string imports = "$ErrorActionPreference='Stop'; Import-Module '" + Path.Combine(moduleRoot, "NetAdapter", "NetAdapter.psd1")
+            + "' -ErrorAction Stop; Import-Module '" + Path.Combine(moduleRoot, "DnsClient", "DnsClient.psd1") + "' -ErrorAction Stop;\n";
+        string script = imports + BuildRecoveryScript(adapterId, index, expected, desired);
+        await RunSystemCommandAsync(Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"),
+            ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], "резервная команда Windows DNS", TimeSpan.FromSeconds(25));
+        await VerifyAsync(adapterId, desired);
+    }
+
+    internal static string BuildRecoveryScript(string adapterId, int currentIndex, DnsFamilySnapshot expected, DnsFamilySnapshot desired)
+    {
+        if (!Guid.TryParse(adapterId, out var id) || currentIndex < 1) throw new ArgumentException("Некорректный адаптер резервного восстановления.");
+        DnsState.Validate(expected); DnsState.Validate(desired);
+        if (!expected.Enabled || !desired.Enabled || expected.Family != desired.Family) throw new ArgumentException("Нельзя менять привязку протокола.");
+        string family = desired.Family == DnsFamily.IPv4 ? "IPv4" : "IPv6";
+        string protocol = desired.Family == DnsFamily.IPv4 ? "Tcpip" : "Tcpip6";
+        string original = string.Join(',', expected.Servers.Select(x => IPAddress.Parse(x).ToString()));
+        string change = desired.Source == DnsSource.Dhcp ? "-ResetServerAddresses"
+            : "-ServerAddresses @(" + string.Join(',', desired.Servers.Select(x => "'" + IPAddress.Parse(x) + "'")) + ") -Validate:$false";
+        // Every interpolated value is a parsed GUID, integer, IP address or fixed enum.
+        // A recycled index or an out-of-band DNS change fails before the only setter.
+        return $$"""
+            $ErrorActionPreference = 'Stop'
+            $nic = @(Get-NetAdapter -IncludeHidden | Where-Object { [guid]$_.InterfaceGuid -eq [guid]'{{id:D}}' })
+            if ($nic.Count -ne 1 -or [int]$nic[0].ifIndex -ne {{currentIndex}}) { throw 'Adapter GUID/index changed; DNS was not written.' }
+            $p = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\{{protocol}}\Parameters\Interfaces\{{id:B}}'
+            $configured = @((@($p.NameServer) -join ' ') -split '[,;\s]+' | Where-Object { $_ } | ForEach-Object { [System.Net.IPAddress]::Parse($_).ToString() })
+            if (($configured -join ',') -cne '{{original}}') { throw 'DNS changed before fallback; the other setting was preserved.' }
+            $dns = @(Get-DnsClientServerAddress -InterfaceIndex {{currentIndex}} -AddressFamily {{family}} -ErrorAction Stop)
+            if ($dns.Count -ne 1) { throw 'The selected DNS family is unavailable; DNS was not written.' }
+            Set-DnsClientServerAddress -InputObject $dns[0] {{change}} -Confirm:$false -ErrorAction Stop
+            """;
     }
 
     internal static IReadOnlyList<string[]> BuildArguments(DnsFamilySnapshot desired, int currentIndex)
@@ -393,16 +530,20 @@ public sealed class WinDnsBackend : IDnsBackend
         throw new IOException("netsh завершился, но источник и порядок DNS " + desired.Family + " не подтверждены. Журнал требуется для восстановления.");
     }
 
-    private static async Task RunNetshAsync(IReadOnlyList<string> arguments)
+    private static Task RunNetshAsync(IReadOnlyList<string> arguments) => RunSystemCommandAsync(
+        Path.Combine(Environment.SystemDirectory, "netsh.exe"), arguments, "netsh", TimeSpan.FromSeconds(12));
+
+    private static async Task RunSystemCommandAsync(string executable, IReadOnlyList<string> arguments, string label, TimeSpan deadline)
     {
-        var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "netsh.exe"))
+        var start = new ProcessStartInfo(executable)
         { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
         using var process = new Process { StartInfo = start };
-        if (!process.Start()) throw new IOException("Не удалось запустить системный netsh.exe.");
+        if (!process.Start()) throw new IOException("Не удалось запустить " + label + ".");
+        long startUtcTicks = process.StartTime.ToUniversalTime().Ticks;
         var output = process.StandardOutput.ReadToEndAsync();
         var error = process.StandardError.ReadToEndAsync();
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+        using var timeout = new CancellationTokenSource(deadline);
         // Waiting for pipe readers together with exit would defeat timeout: a hung process
         // can leave both pipes open after WaitForExitAsync has been cancelled.
         try
@@ -413,13 +554,17 @@ public sealed class WinDnsBackend : IDnsBackend
         catch (OperationCanceledException)
         {
             try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { } catch (Win32Exception) { }
-            throw new TimeoutException("Истёк 12-секундный тайм-аут netsh. Команда могла частично изменить DNS; требуется проверка журнала.");
+            using var stopped = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            try { await process.WaitForExitAsync(stopped.Token); }
+            catch (OperationCanceledException) { throw new DnsCommandStillRunningException(label + " не остановилась. Параллельная команда DNS не запущена; журнал сохранён.")
+                { ProcessId = process.Id, StartUtcTicks = startUtcTicks }; }
+            throw new TimeoutException(label + " не завершилась за " + deadline.TotalSeconds + " с. Программа проверяет фактический DNS перед дальнейшим восстановлением.");
         }
         if (process.ExitCode != 0)
         {
             string detail = (await error + " " + await output).Trim();
             if (detail.Length > 800) detail = detail[..800];
-            throw new IOException("netsh вернул код " + process.ExitCode + ": " + detail);
+            throw new IOException(label + " вернула код " + process.ExitCode + ": " + detail);
         }
     }
 }

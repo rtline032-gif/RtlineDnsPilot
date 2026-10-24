@@ -7,6 +7,9 @@ public static class CoreTests
         int failures = 0;
         void Report(string name,bool ok,string message) { Console.WriteLine((ok ? "PASS " : "FAIL ") + name + (message.Length == 0 ? "" : ": " + message)); if (!ok) failures++; }
         if(args.Contains("--rpc-only")) { await RpcTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--transactions-only")) { await TransactionTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--dns-recovery-only")) { await TransactionTests.RunAsync(Report); await DnsRecoveryCommandTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--application-update-only")) { await ApplicationUpdateClientTests.RunAsync(Report); await ApplicationUpdateLauncherTests.RunAsync(Report); await ApplicationUpdateUiTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--ui-sync-only")) { await UiPersistenceTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--monitoring-only")) { await MonitoringTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--manual-only")) { await ManualSelectionTests.RunAsync(Report); return failures==0?0:1; }
@@ -24,6 +27,7 @@ public static class CoreTests
         if(args.Contains("--one-click-only")) { await OneClickDnsShareTests.RunAsync(Report); return failures==0?0:1; }
         Run(Report);
         await TransactionTests.RunAsync(Report);
+        await DnsRecoveryCommandTests.RunAsync(Report);
         await ProtocolTests.RunAsync(Report);
         await EngineTests.RunAsync(Report);
         InstallSafetyTests.Run(Report);
@@ -49,6 +53,9 @@ public static class CoreTests
         SelectionStabilityTests.Run(Report);
         await AutoSelectionModeTests.RunAsync(Report);
         await OneClickDnsShareTests.RunAsync(Report);
+        await ApplicationUpdateClientTests.RunAsync(Report);
+        await ApplicationUpdateLauncherTests.RunAsync(Report);
+        await ApplicationUpdateUiTests.RunAsync(Report);
         return failures == 0 ? 0 : 1;
     }
     public static void Run(Action<string,bool,string> report)

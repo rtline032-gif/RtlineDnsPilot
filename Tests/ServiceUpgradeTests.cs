@@ -38,32 +38,32 @@ public static class ServiceUpgradeTests
             finally { Directory.Delete(directory, true); }
         }
         const string runtimeJson = """{"runtimeOptions":{"tfm":"net10.0","frameworks":[{"name":"Microsoft.NETCore.App","version":"10.0.0"},{"name":"Microsoft.WindowsDesktop.App","version":"10.0.0"}]}}""";
-        const string depsJson = """{"runtimeTarget":{"name":".NETCoreApp,Version=v10.0"},"targets":{".NETCoreApp,Version=v10.0":{"RtlineDnsPilot/0.1.8":{"runtime":{"RtlineDnsPilot.dll":{}}}}},"libraries":{"RtlineDnsPilot/0.1.8":{}}}""";
+        string depsJson = """{"runtimeTarget":{"name":".NETCoreApp,Version=v10.0"},"targets":{".NETCoreApp,Version=v10.0":{"RtlineDnsPilot/0.1.8":{"runtime":{"RtlineDnsPilot.dll":{}}}}},"libraries":{"RtlineDnsPilot/0.1.8":{}}}""".Replace("0.1.8", AppVersion.Current);
 
         Check("new service installation receipt records corrected RPC version", () =>
-            Require(new InstallReceipt().Version == "0.1.8", "New installations still identify themselves as the old service build."));
+            Require(new InstallReceipt().Version == AppVersion.Current, "New installations still identify themselves as the old service build."));
         Check("different package upgrades an owned old service", () =>
             Require(ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.0"), owner, false), "Existing service would keep its old binaries."));
         Check("same version with different bytes still replaces the package", () =>
-            Require(ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.8"), owner, false), "Different contents were hidden by an equal version."));
+            Require(ServiceInstaller.PackageNeedsUpdate(Receipt(AppVersion.Current), owner, false), "Different contents were hidden by an equal version."));
         Check("matching current package is idempotent", () =>
-            Require(!ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.8"), owner, true), "Matching package would be stopped and copied again."));
+            Require(!ServiceInstaller.PackageNeedsUpdate(Receipt(AppVersion.Current), owner, true), "Matching package would be stopped and copied again."));
         Check("older receipt still requires restart when files already match", () =>
             Require(ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.0"), owner, true), "An older service process could remain running after only the files were updated."));
         Check("four-component receipt version matches current release", () =>
-            Require(!ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.8.0"), owner, true), "Equivalent version formats caused an upgrade or downgrade."));
+            Require(!ServiceInstaller.PackageNeedsUpdate(Receipt(AppVersion.Current + ".0"), owner, true), "Equivalent version formats caused an upgrade or downgrade."));
         Check("newer receipt cannot be downgraded", () =>
-            Reject<InvalidOperationException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.9"), owner, false)));
+            Reject<InvalidOperationException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.11"), owner, false)));
         Check("newer installed DLL cannot be hidden by an older receipt", () =>
-            Reject<InvalidOperationException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.0"), owner, false, new Version(0, 1, 9, 0))));
+            Reject<InvalidOperationException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.0"), owner, false, new Version(0, 1, 11, 0))));
         Check("unknown receipt version does not authorize replacement", () =>
             Reject<InvalidDataException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("broken"), owner, false)));
         Check("another owner cannot reinstall even an identical package", () =>
-            Reject<UnauthorizedAccessException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.8"), "S-1-5-21-100-200-300-1002", true)));
+            Reject<UnauthorizedAccessException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt(AppVersion.Current), "S-1-5-21-100-200-300-1002", true)));
         Check("same source and installed directory needs no self copy", () => WithPackageFiles((directory, files) =>
         {
             Require(ServiceInstaller.PackageMatchesInstalled(files, directory), "Identical installed path was considered a different package.");
-            Require(!ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.8"), owner, ServiceInstaller.PackageMatchesInstalled(files, directory)), "Same installed path would enter replacement.");
+            Require(!ServiceInstaller.PackageNeedsUpdate(Receipt(AppVersion.Current), owner, ServiceInstaller.PackageMatchesInstalled(files, directory)), "Same installed path would enter replacement.");
         }));
         Check("a changed fourth file invalidates package equality", () => WithPackageFiles((directory, files) =>
         {

@@ -41,6 +41,32 @@ public static class ServiceClient
         throw new InvalidOperationException("Служба не отвечает. Проверьте service.log в ProgramData\\NetPilot.");
     }
     public static Task UninstallAsync()=>RunElevatedAsync("--uninstall-service");
+    internal static async Task InstallPackageAsync(string directory,CancellationToken token=default)
+    {
+        token.ThrowIfCancellationRequested();
+        var full=Path.GetFullPath(directory);
+        var version=ServiceInstaller.ReadManagedVersion(File.ReadAllBytes(Path.Combine(full,"RtlineDnsPilot.dll")),"RtlineDnsPilot.dll");
+        var packageVersion=version.Revision==0?new Version(version.Major,version.Minor,Math.Max(0,version.Build)).ToString():version.ToString();
+        _=ServiceInstaller.ReadPackage(full,packageVersion);
+        var sid=WindowsIdentity.GetCurrent().User?.Value??throw new InvalidOperationException("Не определён пользователь Windows.");
+        token.ThrowIfCancellationRequested();
+        await RunElevatedExecutableAsync(Path.Combine(full,"RtlineDnsPilot.exe"),"--install-service","--repair-service","--owner-sid",sid);
+        // Once Windows has started the elevated installer, wait for its actual
+        // result rather than treating caller cancellation as a completed rollback.
+        for(int i=0;i<20;i++)
+        {
+            try
+            {
+                var reply=await SendAsync(new RpcRequest {Command="status"});
+                if(reply.Ok && reply.Status is { } status && Version.TryParse(status.ServiceVersion,out var actual)
+                    && new Version(actual.Major,actual.Minor,Math.Max(0,actual.Build),Math.Max(0,actual.Revision))==version
+                    && !status.SystemDnsManaged && !status.DnsRecoveryPending && !status.Config.ManagementRequested) return;
+            }
+            catch(Exception ex) when(ex is IOException or TimeoutException or OperationCanceledException) { }
+            await Task.Delay(500);
+        }
+        throw new IOException("После обновления не подтверждены версия службы и восстановление DNS. Окно прежней версии будет сохранено.");
+    }
     public static Task RecoverAsync()=>RunElevatedAsync("--restore-dns");
     public static Task ResetAutomaticAsync(string adapterId)
     {
@@ -48,9 +74,10 @@ public static class ServiceClient
         var sid=WindowsIdentity.GetCurrent().User?.Value??throw new InvalidOperationException("Не определён пользователь Windows.");
         return RunElevatedAsync("--automatic-dns","--adapter-id",id.ToString("D"),"--owner-sid",sid);
     }
-    private static async Task RunElevatedAsync(params string[] args)
+    private static Task RunElevatedAsync(params string[] args)=>RunElevatedExecutableAsync(Path.Combine(AppContext.BaseDirectory,"RtlineDnsPilot.exe"),args);
+    private static async Task RunElevatedExecutableAsync(string executable,params string[] args)
     {
-        var info=new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory,"RtlineDnsPilot.exe"))
+        var info=new ProcessStartInfo(executable)
         { UseShellExecute=true,Verb="runas",WindowStyle=ProcessWindowStyle.Hidden };
         foreach(var arg in args) info.ArgumentList.Add(arg);
         using var process=Process.Start(info)??throw new InvalidOperationException("Не удалось открыть окно UAC.");
@@ -228,8 +255,10 @@ internal static class ServiceInstaller
 
     private static Version NormalizeVersion(Version version)=>new(version.Major,version.Minor,Math.Max(0,version.Build),Math.Max(0,version.Revision));
 
-    internal static Dictionary<string,byte[]> ReadPackage(string sourceDirectory)
+    internal static Dictionary<string,byte[]> ReadPackage(string sourceDirectory,string? expectedVersion=null)
     {
+        expectedVersion??=AppVersion.Current;
+        if(!Version.TryParse(expectedVersion,out var wanted)) throw new InvalidDataException("Некорректная ожидаемая версия пакета.");
         var package=new Dictionary<string,byte[]>(StringComparer.Ordinal);
         foreach(var file in PackageFiles)
         {
@@ -241,9 +270,9 @@ internal static class ServiceInstaller
             package.Add(file,bytes);
         }
         ValidateRuntimeConfig(package["RtlineDnsPilot.runtimeconfig.json"]);
-        ValidateDependencies(package["RtlineDnsPilot.deps.json"]);
-        if(NormalizeVersion(ReadManagedVersion(package["RtlineDnsPilot.dll"],"RtlineDnsPilot.dll"))!=NormalizeVersion(Version.Parse(AppVersion.Current)))
-            throw new InvalidDataException("RtlineDnsPilot.dll не соответствует версии установщика "+AppVersion.Current+". Пакет не изменён.");
+        ValidateDependencies(package["RtlineDnsPilot.deps.json"],expectedVersion);
+        if(NormalizeVersion(ReadManagedVersion(package["RtlineDnsPilot.dll"],"RtlineDnsPilot.dll"))!=NormalizeVersion(wanted))
+            throw new InvalidDataException("RtlineDnsPilot.dll не соответствует ожидаемой версии "+expectedVersion+". Пакет не изменён.");
         try
         {
             using var stream=new MemoryStream(package["RtlineDnsPilot.exe"],false);
@@ -257,7 +286,7 @@ internal static class ServiceInstaller
         return package;
     }
 
-    private static Version ReadManagedVersion(byte[] bytes,string file,bool allowLegacy=false)
+    internal static Version ReadManagedVersion(byte[] bytes,string file,bool allowLegacy=false)
     {
         try
         {
@@ -292,17 +321,17 @@ internal static class ServiceInstaller
         { throw new InvalidDataException("Повреждён файл пакета RtlineDnsPilot.runtimeconfig.json.",ex); }
     }
 
-    private static void ValidateDependencies(byte[] bytes)
+    private static void ValidateDependencies(byte[] bytes,string expectedVersion)
     {
         try
         {
             using var json=JsonDocument.Parse(bytes);
             var root=json.RootElement;
             var target=root.GetProperty("runtimeTarget").GetProperty("name").GetString();
-            var library="RtlineDnsPilot/"+AppVersion.Current;
+            var library="RtlineDnsPilot/"+expectedVersion;
             if(string.IsNullOrEmpty(target) || !root.GetProperty("libraries").TryGetProperty(library,out _)
                 || !root.GetProperty("targets").GetProperty(target).GetProperty(library).GetProperty("runtime").TryGetProperty("RtlineDnsPilot.dll",out _))
-                throw new InvalidDataException("RtlineDnsPilot.deps.json не соответствует версии пакета "+AppVersion.Current+".");
+                throw new InvalidDataException("RtlineDnsPilot.deps.json не соответствует версии пакета "+expectedVersion+".");
         }
         catch(Exception ex) when(ex is JsonException or KeyNotFoundException or InvalidOperationException)
         { throw new InvalidDataException("Повреждён файл пакета RtlineDnsPilot.deps.json.",ex); }
@@ -375,7 +404,7 @@ internal static class ServiceInstaller
             // Stop waits for the service's own restoration first. A failed service is handled by the durable journal below.
             await ScAsync("stop",AppPaths.ServiceName,allowAlreadyStopped:true);
             bool stopped=false;
-            for(int i=0;i<120;i++)
+            for(int i=0;i<240;i++)
             {
                 if(!ServiceProcessRunning()) { stopped=true; break; }
                 await Task.Delay(500);

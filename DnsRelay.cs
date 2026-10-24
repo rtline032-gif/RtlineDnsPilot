@@ -17,6 +17,7 @@ public sealed class DnsRelay : IAsyncDisposable
     private CancellationTokenSource? _lifetime;
     private CancellationTokenRegistration _closeOnCancellation;
     private volatile bool _running;
+    private volatile string? _lastFailure;
     private bool _disposed;
 
     public DnsRelay(DnsTransport transport, Func<ChannelProfile?> getActive)
@@ -25,6 +26,7 @@ public sealed class DnsRelay : IAsyncDisposable
         _getActive = getActive ?? throw new ArgumentNullException(nameof(getActive));
     }
     public bool IsRunning => _running && _lifetime is { IsCancellationRequested: false };
+    public string? LastFailure => _lastFailure;
 
     public Task StartAsync(int port = 53, bool ipv6 = true, CancellationToken token = default)
     {
@@ -79,21 +81,30 @@ public sealed class DnsRelay : IAsyncDisposable
         {
             while (!token.IsCancellationRequested)
             {
-                var read = await socket.ReceiveFromAsync(buffer, SocketFlags.None, any, token).ConfigureAwait(false);
+                SocketReceiveFromResult read;
+                try { read = await socket.ReceiveFromAsync(buffer, SocketFlags.None, any, token).ConfigureAwait(false); }
+                catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset && !token.IsCancellationRequested)
+                {
+                    // Windows delivers ICMP Port Unreachable from an earlier reply
+                    // here when that local UDP client has already closed its port.
+                    // The shared listener is still usable by every other client.
+                    continue;
+                }
                 if (read.RemoteEndPoint is not IPEndPoint peer || !IPAddress.IsLoopback(peer.Address)) continue;
                 var query = buffer[..read.ReceivedBytes];
                 try { DnsWire.ValidateQuery(query); }
                 catch (InvalidDataException) { continue; } // Do not reflect responses, malformed packets, or unsupported opcodes.
                 if (!_capacity.Wait(0))
                 {
-                    await socket.SendToAsync(DnsWire.Failure(query), SocketFlags.None, peer, token).ConfigureAwait(false);
+                    try { await socket.SendToAsync(DnsWire.Failure(query), SocketFlags.None, peer, token).ConfigureAwait(false); }
+                    catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset && !token.IsCancellationRequested) { }
                     continue;
                 }
                 Track(ProcessDatagramAsync(socket, peer, query, token));
             }
         }
         catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException || (ex is SocketException && token.IsCancellationRequested)) { }
-        catch (SocketException) { StopOnListenerFailure(); }
+        catch (SocketException ex) { StopOnListenerFailure(ex, "UDP " + socket.AddressFamily); }
     }
 
     private async Task ProcessDatagramAsync(Socket socket, IPEndPoint peer, byte[] query, CancellationToken token)
@@ -124,7 +135,7 @@ public sealed class DnsRelay : IAsyncDisposable
             }
         }
         catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException || (ex is SocketException && token.IsCancellationRequested)) { }
-        catch (SocketException) { StopOnListenerFailure(); }
+        catch (SocketException ex) { StopOnListenerFailure(ex, "TCP " + socket.AddressFamily); }
     }
 
     private async Task ProcessConnectionAsync(Socket client, CancellationToken token)
@@ -187,8 +198,9 @@ public sealed class DnsRelay : IAsyncDisposable
         }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
-    private void StopOnListenerFailure()
+    private void StopOnListenerFailure(SocketException error, string listener)
     {
+        _lastFailure = listener + ": " + error.SocketErrorCode + " (" + error.NativeErrorCode + ")";
         _running = false;
         try { _lifetime?.Cancel(); } catch (ObjectDisposedException) { }
     }
