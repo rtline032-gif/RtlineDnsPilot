@@ -1,16 +1,16 @@
 [
   {
-    "tag_name": "v0.1.11",
-    "html_url": "https://github.com/rtline032-gif/RtlineDnsPilot/releases/tag/v0.1.11",
+    "tag_name": "v0.1.12",
+    "html_url": "https://github.com/rtline032-gif/RtlineDnsPilot/releases/tag/v0.1.12",
     "draft": false,
     "prerelease": true,
-    "published_at": "2026-10-24T10:06:41Z",
+    "published_at": "2026-10-24T10:33:17Z",
     "assets": [
       {
-        "name": "RtlineDnsPilot-0.1.11-win-x64.zip",
-        "browser_download_url": "https://github.com/rtline032-gif/RtlineDnsPilot/releases/download/v0.1.11/RtlineDnsPilot-0.1.11-win-x64.zip",
-        "size": 301982,
-        "digest": "sha256:88b598210d0721d86978c422b0b9deddb426945da40a2f465bf06f17da7a4372",
+        "name": "RtlineDnsPilot-0.1.12-win-x64.zip",
+        "browser_download_url": "https://github.com/rtline032-gif/RtlineDnsPilot/releases/download/v0.1.12/RtlineDnsPilot-0.1.12-win-x64.zip",
+        "size": 302397,
+        "digest": "sha256:91f059614cc1982883d438b1ca085f0846afdb12ef43097f5a80d8fb6034d760",
         "state": "uploaded"
       }
     ]
