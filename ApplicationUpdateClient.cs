@@ -13,7 +13,7 @@ internal sealed record ApplicationUpdateProgress(string Message, long Completed 
 internal sealed class ApplicationUpdateClient : IDisposable
 {
     private const string Repository = "https://github.com/rtline032-gif/RtlineDnsPilot";
-    private const string ReleasesApi = "https://api.github.com/repos/rtline032-gif/RtlineDnsPilot/releases?per_page=20";
+    private const string UpdatesManifest = "https://raw.githubusercontent.com/rtline032-gif/RtlineDnsPilot/main/updates.json";
     private const int MetadataLimit = 1024 * 1024;
     private const long ArchiveLimit = 32L * 1024 * 1024;
     private const long InflatedLimit = 64L * 1024 * 1024;
@@ -45,19 +45,19 @@ internal sealed class ApplicationUpdateClient : IDisposable
         deadline.CancelAfter(TimeSpan.FromSeconds(15));
         try
         {
-            using var response = await SendAsync(new Uri(ReleasesApi), metadata: true, deadline.Token);
-            if (IsRedirect(response.StatusCode)) throw new InvalidDataException("GitHub перенаправил список обновлений на другой адрес; проверка остановлена.");
-            EnsureSuccess(response, "список выпусков");
+            using var response = await SendAsync(new Uri(UpdatesManifest), metadata: true, deadline.Token);
+            if (IsRedirect(response.StatusCode)) throw new InvalidDataException("GitHub перенаправил файл обновлений на другой адрес; проверка остановлена.");
+            EnsureSuccess(response, "файл обновлений");
             var bytes = await ReadBoundedAsync(response.Content, MetadataLimit, deadline.Token);
             try
             {
                 using var json = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 24 });
                 return SelectRelease(json.RootElement, current);
             }
-            catch (JsonException ex) { throw new InvalidDataException("GitHub вернул повреждённый список обновлений.", ex); }
+            catch (JsonException ex) { throw new InvalidDataException("GitHub вернул повреждённый файл обновлений.", ex); }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        { throw new TimeoutException("GitHub не ответил на проверку обновлений за 15 секунд. Текущая программа сохранена."); }
+        { throw new TimeoutException("GitHub не вернул файл обновлений за 15 секунд. Текущая программа сохранена."); }
     }
 
     public async Task<StagedApplicationUpdate> DownloadAsync(ApplicationRelease release, string updatesRoot,
@@ -134,7 +134,7 @@ internal sealed class ApplicationUpdateClient : IDisposable
             if (ReadString(asset, "state", 32) != "uploaded") throw new InvalidDataException("Архив выпуска ещё не загружен полностью.");
             string digest = ReadString(asset, "digest", 80);
             if (!digest.StartsWith("sha256:", StringComparison.Ordinal) || !IsSha256(digest[7..]))
-                throw new InvalidDataException("GitHub не предоставил SHA-256 архива обновления.");
+                throw new InvalidDataException("В файле обновлений нет корректного SHA-256 архива.");
             if (!asset.TryGetProperty("size", out var size) || !size.TryGetInt64(out long length)) throw new InvalidDataException("Не задан размер обновления.");
             var result = new ApplicationRelease(candidate.Text, candidate.Tag, ReadString(release, "html_url", 512),
                 ReadString(asset, "browser_download_url", 2048), length, digest[7..].ToLowerInvariant(), ReadBoolean(release, "prerelease"));
@@ -252,8 +252,8 @@ internal sealed class ApplicationUpdateClient : IDisposable
     private async Task<HttpResponseMessage> SendAsync(Uri uri, bool metadata, CancellationToken token)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(metadata ? "application/vnd.github+json" : "application/octet-stream"));
-        if (metadata) request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(metadata ? "application/json" : "application/octet-stream"));
+        if (metadata) request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
         return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
     }
     private static async Task<byte[]> ReadBoundedAsync(HttpContent content, int limit, CancellationToken token)
@@ -289,9 +289,7 @@ internal sealed class ApplicationUpdateClient : IDisposable
     private static bool IsRedirect(HttpStatusCode code) => code is HttpStatusCode.MovedPermanently or HttpStatusCode.Found or HttpStatusCode.SeeOther or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect;
     private static void EnsureSuccess(HttpResponseMessage response, string what)
     {
-        if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
-            throw new HttpRequestException("GitHub ограничил запросы обновлений. Повторите позже; текущая версия сохранена.", null, response.StatusCode);
-        if (!response.IsSuccessStatusCode) throw new HttpRequestException("GitHub не вернул " + what + " (HTTP " + (int)response.StatusCode + ").", null, response.StatusCode);
+        if (!response.IsSuccessStatusCode) throw new HttpRequestException("GitHub не вернул " + what + " (HTTP " + (int)response.StatusCode + "). Текущая версия сохранена.", null, response.StatusCode);
     }
     private static bool ReadBoolean(JsonElement value, string name) => value.TryGetProperty(name, out var field) && field.ValueKind is JsonValueKind.True or JsonValueKind.False
         ? field.GetBoolean() : throw new InvalidDataException("В списке обновлений отсутствует признак " + name + ".");

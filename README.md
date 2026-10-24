@@ -2,17 +2,17 @@
 
 Бесплатная программа для Windows 10/11 x64: проверяет DNS и доступность выбранных HTTPS-сервисов, сравнивает каналы, сохраняет историю и может автоматически выбирать доступный DNS-профиль.
 
-**Версия 0.1.11 — ранний выпуск без цифровой подписи.** Подготовка заявки SignPath Foundation не означает, что фонд уже одобрил проект или подписал программу. Статус указан в [политике подписи](CODE_SIGNING.md).
+**Версия 0.1.12 — ранний выпуск без цифровой подписи.** Подготовка заявки SignPath Foundation не означает, что фонд уже одобрил проект или подписал программу. Статус указан в [политике подписи](CODE_SIGNING.md).
 
 ## Скачать и обновить
 
-[Скачать RtlineDnsPilot 0.1.11 для Windows x64](https://github.com/rtline032-gif/RtlineDnsPilot/releases/download/v0.1.11/RtlineDnsPilot-0.1.11-win-x64.zip). Нужен .NET Desktop Runtime 10.0 x64. Распакуйте весь архив в одну папку.
+[Скачать RtlineDnsPilot 0.1.12 для Windows x64](https://github.com/rtline032-gif/RtlineDnsPilot/releases/download/v0.1.12/RtlineDnsPilot-0.1.12-win-x64.zip). Нужен .NET Desktop Runtime 10.0 x64. Распакуйте весь архив в одну папку.
 
 В 0.1.10 добавлена отдельная кнопка «Обновить программу»: она проверяет опубликованные выпуски этого репозитория, скачивает более новую версию и проверяет SHA-256, состав ZIP и версию программы. Помощник ждёт закрытия прежнего окна и запускает новое. Пользовательские каналы и история сохраняются. Если уже установлена служба, её обновление потребует разрешения Windows и завершится режимом наблюдения, с выключенным управлением DNS.
 
 Для версий до 0.1.10 нужен один ручной переход на этот архив: в старом приложении кнопки обновления нет. Новая версия также сохраняет исправления 0.1.9 для восстановления DNS после тайм-аута и обработки позднего ответа отключившемуся DNS-клиенту.
 
-Локально пройдены 66 проверок восстановления/автоматического DNS и три изолированных запуска GUI. Полный C# прогон: 441 PASS и один ранее существовавший сбой CurrentUser DPAPI в ограниченном профиле. Реальные установка службы, UAC и изменение DNS физического адаптера при этих проверках не выполнялись. Обновление на конкретном проблемном Windows 11 требует проверки на самом ПК. Состояние проверки на GitHub видно во вкладке Actions.
+Локально пройдены 46 проверок механизма обновления, сохранены 66 проверок восстановления/автоматического DNS и три изолированных запуска GUI. Полный C# прогон: 444 PASS и один ранее существовавший сбой CurrentUser DPAPI в ограниченном профиле. Реальные установка службы, UAC и изменение DNS физического адаптера при этих проверках не выполнялись. Обновление на конкретном проблемном Windows 11 требует проверки на самом ПК. Состояние проверки на GitHub видно во вкладке Actions.
 
 ## Исправления 0.1.11
 
@@ -21,6 +21,14 @@
 При обновлении из 0.1.10 кнопкой «Обновить программу» новый установщик сначала полностью останавливает принадлежащую службу. Он сохраняет уже подтверждённый автоматический DNS, защищённо архивирует прежний снимок в локальном каталоге данных и восстанавливает остальные принадлежащие программе настройки. Установщик не принуждает сторонний статический DNS к DHCP. Повреждённые журналы, незавершённые системные команды и смена настроек во время восстановления продолжают блокировать обновление.
 
 После успешного обновления управление DNS выключено, служба работает в режиме наблюдения. Каналы и история сохраняются. Обычное «Восстановить DNS» сохраняет прежнюю цель — точные исходные настройки; оно сообщает о конфликте с ручным изменением.
+
+## Обновления без REST API в 0.1.12
+
+Кнопка получает список версий из небольшого [публичного updates.json](https://raw.githubusercontent.com/rtline032-gif/RtlineDnsPilot/main/updates.json). В 0.1.12 нет обращений к api.github.com, запросов авторизации или автоматической проверки в фоне. Архив скачивается из официального GitHub Releases с прежними проверками SHA-256, внутренних файлов и версии. Сетевая доступность GitHub и его серверов скачивания по-прежнему необходима.
+
+Версии 0.1.10 и 0.1.11 продолжают обращаться к API. Для первого перехода их кнопке нужен доступ к API; при сохраняющемся ограничении один раз скачайте архив 0.1.12 и запустите новую версию после выхода из старой.
+
+Для выпуска следующей версии сначала опубликуйте и проверьте GitHub Release и SHA-256 Windows ZIP, затем обновите updates.json на main проверенными публичными полями опубликованного выпуска. До завершения публикации файл сохраняет предыдущую доступную версию. Секреты и пользовательские сведения в файл не включаются.
 
 ## Возможности
 
@@ -76,4 +84,4 @@ C# / .NET 10 / Windows Forms. Исходники приёмника Google Apps 
 
 ## English overview
 
-RtlineDnsPilot is an open-source Windows DNS monitor and local DNS forwarder. It probes public DNS and HTTPS reachability through configurable upstream profiles, records history, and supports automatic selection by stability or latency. System DNS management is explicitly enabled by the user and requires Windows elevation. Public probes do not verify authenticated AI sessions or VPN tunnels. Version 0.1.11 is unsigned; SignPath Foundation approval has not been obtained. See [privacy](PRIVACY.md), [code-signing status](CODE_SIGNING.md), and [MIT license](LICENSE).
+RtlineDnsPilot is an open-source Windows DNS monitor and local DNS forwarder. It probes public DNS and HTTPS reachability through configurable upstream profiles, records history, and supports automatic selection by stability or latency. System DNS management is explicitly enabled by the user and requires Windows elevation. Public probes do not verify authenticated AI sessions or VPN tunnels. Version 0.1.12 is unsigned; SignPath Foundation approval has not been obtained. See [privacy](PRIVACY.md), [code-signing status](CODE_SIGNING.md), and [MIT license](LICENSE).

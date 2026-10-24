@@ -9,7 +9,7 @@ namespace NetPilot.Tests;
 public static class ApplicationUpdateClientTests
 {
     private const string Root = "https://github.com/rtline032-gif/RtlineDnsPilot";
-    private const string Api = "https://api.github.com/repos/rtline032-gif/RtlineDnsPilot/releases?per_page=20";
+    private const string Manifest = "https://raw.githubusercontent.com/rtline032-gif/RtlineDnsPilot/main/updates.json";
     private static readonly string[] Files = ["RtlineDnsPilot.exe", "RtlineDnsPilot.dll", "RtlineDnsPilot.deps.json", "RtlineDnsPilot.runtimeconfig.json", "profiles.json", "README.txt", "CHANNELS.txt", "LICENSE", "PRIVACY.md", "CODE_SIGNING.md"];
 
     public static async Task RunAsync(Action<string, bool, string> report)
@@ -40,8 +40,42 @@ public static class ApplicationUpdateClientTests
             using var client = new ApplicationUpdateClient(handler);
             var release = await client.CheckAsync(new Version(0, 1, 10));
             Require(release is { Version: "0.1.11", Tag: "v0.1.11", IsPrerelease: true }, "Newest published numeric release was not selected.");
-            Require(handler.Requests.SequenceEqual(new[] { Api }), "Update check contacted a destination other than the single official repository API.");
+            Require(handler.Requests.SequenceEqual(new[] { Manifest }), "Update check contacted a destination other than the official public updates file.");
             Require(handler.Methods.All(m => m == HttpMethod.Get) && !handler.SawAuthorization, "Update check sent an authenticated request or mutation.");
+        });
+        await Check("static update metadata works without contacting a rate-limited GitHub API", async () =>
+        {
+            var handler = new Handler(request => request.RequestUri!.AbsoluteUri == Manifest
+                ? Json(new[] { Release("0.1.12") }) : new HttpResponseMessage(HttpStatusCode.Forbidden));
+            using var client = new ApplicationUpdateClient(handler);
+            var offer = await client.CheckAsync(new Version(0,1,11));
+            Require(offer?.Version == "0.1.12" && handler.Requests.SequenceEqual(new[] {Manifest}), "A GitHub API quota still prevented a static-file update.");
+        });
+        await Check("static update checks request fresh JSON without credentials or API-only headers", async () =>
+        {
+            bool validHeaders = false;
+            var handler = new Handler(request =>
+            {
+                validHeaders = request.Headers.Accept.Any(x => x.MediaType == "application/json")
+                    && request.Headers.CacheControl?.NoCache == true && !request.Headers.Contains("X-GitHub-Api-Version")
+                    && request.Headers.Authorization is null && !request.Headers.Contains("Cookie");
+                return Json(new[] {Release("0.1.12")});
+            });
+            using var client = new ApplicationUpdateClient(handler);
+            Require((await client.CheckAsync(new Version(0,1,11)))?.Version == "0.1.12" && validHeaders,
+                "The public update file used an API header, credentials, or an unvalidated cached response.");
+        });
+        await Check("a denied static manifest reports its HTTP status without retrying through the API", async () =>
+        {
+            var handler = new Handler(request => request.RequestUri!.AbsoluteUri == Manifest
+                ? new HttpResponseMessage(HttpStatusCode.Forbidden) : throw new Exception("Unexpected GitHub API fallback."));
+            using var client = new ApplicationUpdateClient(handler);
+            try { await client.CheckAsync(new Version(0,1,11)); throw new InvalidOperationException("Denied metadata was accepted."); }
+            catch(HttpRequestException ex)
+            {
+                Require(ex.StatusCode == HttpStatusCode.Forbidden && ex.Message.Contains("HTTP 403",StringComparison.Ordinal), "The failure hid the actual HTTP response status.");
+            }
+            Require(handler.Requests.SequenceEqual(new[] {Manifest}), "A denied static file caused another request or API fallback.");
         });
         await Check("up-to-date and newer installed versions never offer a downgrade", async () =>
         {
@@ -65,7 +99,7 @@ public static class ApplicationUpdateClientTests
         {
             var redirect = new Handler(_ => Redirect("https://example.invalid/releases"));
             using (var client = new ApplicationUpdateClient(redirect)) await Reject(() => client.CheckAsync(new Version(0, 1, 10)));
-            Require(redirect.Requests.Count == 1, "A metadata redirect escaped the official API.");
+            Require(redirect.Requests.Count == 1, "A metadata redirect escaped the official update file.");
             using var oversized = new ApplicationUpdateClient(new Handler(_ => Bytes(new byte[1024 * 1024 + 1])));
             await Reject(() => oversized.CheckAsync(new Version(0, 1, 10)));
         });

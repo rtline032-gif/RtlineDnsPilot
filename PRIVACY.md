@@ -40,9 +40,9 @@ Configuration, adapter recovery state, measurements, country evidence and event 
 
 The optional **Share DNS** button sends only eligible additional public DNS settings and ChatGPT/Gemini public-check flags to the project owner's Google Apps Script/Drive catalogue. It does not upload local names, device identifiers, adapter settings, custom monitoring URLs, country history or logs. Source IP is not a JSON field, but Google can observe it at the transport layer. Shared settings may remain in the catalogue and be copied by its readers; no guaranteed removal period is specified. There is no background catalogue upload, advertising analytics or automatic log upload.
 
-## Обновление программы, версия 0.1.11
+## Обновление программы, версия 0.1.12
 
-Кнопка «Обновить программу» обращается к API GitHub и серверам скачивания
+Кнопка «Обновить программу» обращается к публичному файлу updates.json на raw.githubusercontent.com и серверам скачивания
 официального репозитория rtline032-gif/RtlineDnsPilot. GitHub получает обычные
 сведения HTTPS-соединения, включая доступный ему IP и строку приложения с
 версией. Каналы, объекты проверок, журналы, имя компьютера и данные аккаунтов
