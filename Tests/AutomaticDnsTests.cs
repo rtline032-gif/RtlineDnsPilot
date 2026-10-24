@@ -120,9 +120,11 @@ public static class AutomaticDnsTests
             };
             var manager = new DnsSessionManager(dir, backend);
             await Reject(() => Reset(manager));
-            Require(manager.HasJournal && backend.Writes == 2 && backend.State.IPv6.Servers.SequenceEqual(new[] { "2001:db8::99" }), "Conflict was overwritten or recovery evidence was discarded.");
+            Require(manager.HasJournal && backend.State.IPv6.Servers.SequenceEqual(new[] { "2001:db8::99" })
+                && backend.State.IPv4.Servers.SequenceEqual(new[] { "9.9.9.9", "1.1.1.1" }), "Conflict was overwritten, owned IPv4 was not restored, or recovery evidence was discarded.");
+            var writes = backend.Writes;
             await Reject(() => Reset(manager));
-            Require(backend.Writes == 2, "A new reset ignored unresolved ownership.");
+            Require(backend.Writes == writes, "A new reset ignored unresolved ownership.");
         });
 
         await Check("startup recovery rolls back an interrupted automatic-DNS journal", async dir =>
@@ -151,6 +153,82 @@ public static class AutomaticDnsTests
             await Reject(() => Reset(manager));
             Require(manager.Managed && manager.HasJournal && backend.Writes == writes, "The reset overwrote an active relay journal.");
             await manager.RestoreAsync();
+        });
+
+        await Check("explicit automatic reset accepts a reopened journal after the user already chose DHCP", async dir =>
+        {
+            var backend = new FakeBackend(Snapshot());
+            await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv4 = Automatic(DnsFamily.IPv4);
+            backend.State.IPv4.EffectiveServers = ["192.0.2.53"];
+            backend.State.IPv6 = Automatic(DnsFamily.IPv6);
+            backend.State.IPv6.EffectiveServers = ["2001:db8::53"];
+            var selected = JsonData.Clone(backend.State); var writes = backend.Writes;
+            var manager = new DnsSessionManager(dir, backend);
+            await Reset(manager);
+            Require(JsonData.Encode(backend.State) == JsonData.Encode(selected) && backend.Writes == writes, "Reset reapplied old manual DNS or rewrote an already verified automatic setting.");
+            Require(!manager.HasJournal && !manager.Managed, "A completed explicit automatic choice remained permanently blocked by the old relay journal.");
+        });
+
+        await Check("automatic recovery refuses a different selected adapter before reading or writing DNS", async dir =>
+        {
+            var backend = new FakeBackend(Snapshot());
+            await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv4 = Automatic(DnsFamily.IPv4); backend.State.IPv6 = Automatic(DnsFamily.IPv6);
+            var reads = backend.Reads; var writes = backend.Writes;
+            var manager = new DnsSessionManager(dir, backend);
+            await Reject(() => manager.ResetAutomaticAsync("ac23a89e-27cd-4928-8caa-e27779da06dd"));
+            Require(manager.HasJournal && backend.Reads == reads && backend.Writes == writes, "The selected adapter did not match the retained journal.");
+        });
+
+        await Check("ordinary restoration does not silently adopt a manual automatic-DNS choice", async dir =>
+        {
+            var backend = new FakeBackend(Snapshot());
+            await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv4 = Automatic(DnsFamily.IPv4); backend.State.IPv6 = Automatic(DnsFamily.IPv6);
+            var writes = backend.Writes; var manager = new DnsSessionManager(dir, backend);
+            await Reject(manager.RestoreAsync);
+            Require(manager.HasJournal && backend.Writes == writes && backend.State.IPv4.Source == DnsSource.Dhcp && backend.State.IPv6.Source == DnsSource.Dhcp,
+                "Ordinary Restore discarded the old snapshot or overwrote the user's changed DNS without an explicit automatic goal.");
+        });
+
+        await Check("automatic recovery preserves a completed DHCP family while clearing remaining owned loopback", async dir =>
+        {
+            var backend = new FakeBackend(Snapshot());
+            await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv6 = Automatic(DnsFamily.IPv6); backend.State.IPv6.EffectiveServers = ["2001:db8::53"];
+            var applied = new List<DnsFamily>(); backend.BeforeApply = (_, desired) => applied.Add(desired.Family);
+            var manager = new DnsSessionManager(dir, backend);
+            await Reset(manager);
+            Require(!manager.HasJournal && backend.State.IPv4.Source == DnsSource.Dhcp && backend.State.IPv6.Source == DnsSource.Dhcp,
+                "Explicit automatic recovery left the partial relay transaction unresolved.");
+            Require(applied.Count > 0 && applied.All(f => f == DnsFamily.IPv4), "Automatic recovery rewrote the already completed IPv6 DHCP choice.");
+        });
+
+        await Check("automatic recovery cannot bypass a retained running DNS writer", async dir =>
+        {
+            var backend = new FakeBackend(Snapshot());
+            await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv4 = Automatic(DnsFamily.IPv4); backend.State.IPv6 = Automatic(DnsFamily.IPv6);
+            var pending = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(JournalPath(dir)))!;
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            pending["PendingWriterPid"] = process.Id;
+            pending["PendingWriterStartUtcTicks"] = process.StartTime.ToUniversalTime().Ticks;
+            File.WriteAllText(JournalPath(dir), pending.ToJsonString());
+            var reads = backend.Reads; var writes = backend.Writes; var manager = new DnsSessionManager(dir, backend);
+            await Reject(() => Reset(manager));
+            Require(manager.HasJournal && backend.Reads == reads && backend.Writes == writes, "A new automatic-DNS choice raced an unconfirmed running writer.");
+        });
+
+        await Check("automatic recovery cannot accept DHCP whose effective DNS is still loopback", async dir =>
+        {
+            var backend = new FakeBackend(Snapshot());
+            await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv4 = Automatic(DnsFamily.IPv4); backend.State.IPv4.EffectiveServers = ["127.0.0.1"];
+            backend.State.IPv6 = Automatic(DnsFamily.IPv6); backend.State.IPv6.EffectiveServers = ["::1"];
+            var writes = backend.Writes; var manager = new DnsSessionManager(dir, backend);
+            await Reject(() => Reset(manager));
+            Require(manager.HasJournal && backend.Writes == writes, "An unverified DHCP source discarded restoration evidence or rewrote conflicting DNS.");
         });
 
         await Check("automatic reset rejects an unowned loopback DNS", async dir =>

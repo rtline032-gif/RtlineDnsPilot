@@ -78,16 +78,114 @@ public static class TransactionTests
         await Check("third-party DNS replacement is preserved and blocks further activation", async dir =>
         {
             var backend = new FakeBackend(StaticSnapshot());
+            var originalV6 = JsonData.Clone(backend.State.IPv6);
             var session = new DnsSessionManager(dir, backend);
             await session.EnableAsync(AdapterId);
             backend.State.IPv4 = Family(DnsFamily.IPv4, DnsSource.Static, ["208.67.222.222"]);
-            var changed = JsonData.Clone(backend.State);
-            var count = backend.Writes;
+            var changedV4 = JsonData.Clone(backend.State.IPv4);
             await Reject(session.RestoreAsync);
-            Same(changed, backend.State);
-            Require(session.HasJournal && backend.Writes == count, "Conflict performed writes or discarded recovery evidence.");
+            Require(JsonData.Encode(backend.State.IPv4) == JsonData.Encode(changedV4), "Conflict overwrote the other application's IPv4 DNS.");
+            Require(JsonData.Encode(backend.State.IPv6) == JsonData.Encode(originalV6) && session.HasJournal, "Conflict stranded the independently owned IPv6 or discarded recovery evidence.");
+            var count = backend.Writes;
             await Reject(() => session.EnableAsync(AdapterId));
             Require(backend.Writes == count, "Activation ignored the unresolved journal.");
+        });
+
+        await Check("an IPv6 conflict does not strand owned IPv4 on loopback", async dir =>
+        {
+            var backend = new FakeBackend(StaticSnapshot());
+            var original = JsonData.Clone(backend.State);
+            var manager = new DnsSessionManager(dir, backend);
+            await manager.EnableAsync(AdapterId);
+            backend.State.IPv6 = Family(DnsFamily.IPv6, DnsSource.Dhcp, [], ["2001:db8::53"]);
+            await Reject(manager.RestoreAsync);
+            Require(JsonData.Encode(backend.State.IPv4) == JsonData.Encode(original.IPv4), "IPv6 conflict left owned IPv4 on 127.0.0.1.");
+            Require(backend.State.IPv6.Source == DnsSource.Dhcp && backend.State.IPv6.Servers.Length == 0, "Recovery overwrote the user's IPv6 DHCP choice.");
+            using var journal = JsonDocument.Parse(File.ReadAllText(JournalPath(dir)));
+            Require(!journal.RootElement.GetProperty("IPv4Touched").GetBoolean() && journal.RootElement.GetProperty("IPv6Touched").GetBoolean(), "Recovery lost ownership of the unresolved family or kept the restored one pending.");
+        });
+
+        await Check("service update preserves manually selected automatic DNS and archives the original snapshot", async dir =>
+        {
+            var backend = new FakeBackend(StaticSnapshot()); var original = JsonData.Clone(backend.State);
+            await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv4 = Family(DnsFamily.IPv4, DnsSource.Dhcp, [], ["192.0.2.53"]);
+            backend.State.IPv6 = Family(DnsFamily.IPv6, DnsSource.Dhcp, [], ["2001:db8::53"]);
+            var chosen = JsonData.Clone(backend.State); var writes = backend.Writes;
+            var manager = new DnsSessionManager(dir, backend); await RestoreForUpdate(manager);
+            Same(chosen, backend.State);
+            Require(backend.Writes == writes && !manager.HasJournal && !manager.Managed, "Update changed already automatic DNS or kept its stale active journal.");
+            var archives = Directory.GetFiles(dir, "dns-session.resolved-*.json");
+            Require(archives.Length == 1, "Update discarded the user's original recovery snapshot.");
+            using var archive = JsonDocument.Parse(File.ReadAllText(archives[0]));
+            Same(original, JsonData.Decode<AdapterDnsSnapshot>(archive.RootElement.GetProperty("Original").GetRawText()));
+        });
+
+        await Check("service update restores owned IPv4 while retaining the user's IPv6 automatic choice", async dir =>
+        {
+            var backend = new FakeBackend(StaticSnapshot()); var original = JsonData.Clone(backend.State);
+            await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv6 = Family(DnsFamily.IPv6, DnsSource.Dhcp, [], ["2001:db8::53"]);
+            var chosenV6 = JsonData.Clone(backend.State.IPv6); var writes = backend.Writes;
+            var manager = new DnsSessionManager(dir, backend); await RestoreForUpdate(manager);
+            Require(JsonData.Encode(backend.State.IPv4) == JsonData.Encode(original.IPv4) && JsonData.Encode(backend.State.IPv6) == JsonData.Encode(chosenV6), "Update forced a new DNS mode or overwrote the manual automatic choice.");
+            Require(backend.Writes == writes + 1 && !manager.HasJournal, "Update failed to restore the independently owned IPv4 family.");
+        });
+
+        await Check("service update refuses to retire automatic DNS without a protected archive", async dir =>
+        {
+            var backend = new FakeBackend(StaticSnapshot()); await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv4 = Family(DnsFamily.IPv4, DnsSource.Dhcp, [], ["192.0.2.53"]);
+            backend.State.IPv6 = Family(DnsFamily.IPv6, DnsSource.Dhcp, [], ["2001:db8::53"]);
+            var writes = backend.Writes;
+            var manager = new DnsSessionManager(dir, backend, path => { if(path.Contains(".resolved-", StringComparison.Ordinal)) throw new UnauthorizedAccessException("Injected archive protection failure."); });
+            await Reject(() => RestoreForUpdate(manager));
+            Require(manager.HasJournal && backend.Writes == writes && Directory.GetFiles(dir, "dns-session.resolved-*.json").Length == 0, "Update lost its original snapshot after archive protection failed.");
+        });
+
+        await Check("service update preserves an arbitrary static DNS replacement and recovery evidence", async dir =>
+        {
+            var backend = new FakeBackend(StaticSnapshot()); var original = JsonData.Clone(backend.State);
+            await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv6 = Family(DnsFamily.IPv6, DnsSource.Static, ["2001:4860:4860::8844"]);
+            var manager = new DnsSessionManager(dir, backend); await Reject(() => RestoreForUpdate(manager));
+            Require(manager.HasJournal && backend.State.IPv6.Servers.SequenceEqual(new[] {"2001:4860:4860::8844"}) && backend.State.IPv4.Servers.SequenceEqual(original.IPv4.Servers), "Update overwrote a static conflict or stranded the other owned family.");
+        });
+
+        await Check("service update rechecks automatic DNS after archiving before retiring ownership", async dir =>
+        {
+            var backend = new FakeBackend(StaticSnapshot()); await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv6 = Family(DnsFamily.IPv6, DnsSource.Dhcp, [], ["2001:db8::53"]);
+            var manager = new DnsSessionManager(dir, backend, path =>
+            {
+                if(path.Contains(".resolved-", StringComparison.Ordinal)) backend.State.IPv6 = Family(DnsFamily.IPv6, DnsSource.Static, ["2001:4860:4860::8844"]);
+            });
+            await Reject(() => RestoreForUpdate(manager));
+            Require(manager.HasJournal && backend.State.IPv6.Servers.SequenceEqual(new[] {"2001:4860:4860::8844"}), "Update forgot ownership after DNS changed while its archive was written.");
+            using var journal = JsonDocument.Parse(File.ReadAllText(JournalPath(dir)));
+            Require(journal.RootElement.GetProperty("IPv6Touched").GetBoolean(), "Concurrent DNS change silently completed the unresolved journal.");
+        });
+
+        await Check("service update recovery requires the relay owner to be stopped", async dir =>
+        {
+            var backend = new FakeBackend(StaticSnapshot()); var manager = new DnsSessionManager(dir, backend);
+            await manager.EnableAsync(AdapterId); var writes = backend.Writes;
+            await Reject(() => RestoreForUpdate(manager));
+            Require(manager.Managed && manager.HasJournal && backend.Writes == writes, "Update recovery changed a live owner's DNS.");
+        });
+
+        await Check("service update cannot retire a journal while its system writer is still running", async dir =>
+        {
+            var backend = new FakeBackend(StaticSnapshot()); await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv4 = Family(DnsFamily.IPv4, DnsSource.Dhcp, [], ["192.0.2.53"]);
+            backend.State.IPv6 = Family(DnsFamily.IPv6, DnsSource.Dhcp, [], ["2001:db8::53"]);
+            var pending = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(JournalPath(dir)))!;
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            pending["PendingWriterPid"] = process.Id; pending["PendingWriterStartUtcTicks"] = process.StartTime.ToUniversalTime().Ticks;
+            File.WriteAllText(JournalPath(dir), pending.ToJsonString());
+            var reads = backend.Reads; var writes = backend.Writes; var manager = new DnsSessionManager(dir, backend);
+            await Reject(() => RestoreForUpdate(manager));
+            Require(manager.HasJournal && backend.Reads == reads && backend.Writes == writes && Directory.GetFiles(dir, "dns-session.resolved-*.json").Length == 0, "Update raced a pending DNS writer.");
         });
 
         await Check("a new manager recovers the persisted transaction", async dir =>
@@ -345,6 +443,7 @@ public static class TransactionTests
         });
     }
 
+    private static Task RestoreForUpdate(DnsSessionManager manager) => manager.RestoreForServiceUpdateAsync();
     private static string JournalPath(string dir) => Path.Combine(dir, "dns-session.json");
     private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
     private static async Task Reject(Func<Task> action)

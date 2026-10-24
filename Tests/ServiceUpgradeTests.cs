@@ -53,9 +53,9 @@ public static class ServiceUpgradeTests
         Check("four-component receipt version matches current release", () =>
             Require(!ServiceInstaller.PackageNeedsUpdate(Receipt(AppVersion.Current + ".0"), owner, true), "Equivalent version formats caused an upgrade or downgrade."));
         Check("newer receipt cannot be downgraded", () =>
-            Reject<InvalidOperationException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.11"), owner, false)));
+            Reject<InvalidOperationException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.12"), owner, false)));
         Check("newer installed DLL cannot be hidden by an older receipt", () =>
-            Reject<InvalidOperationException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.0"), owner, false, new Version(0, 1, 11, 0))));
+            Reject<InvalidOperationException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.0"), owner, false, new Version(0, 1, 12, 0))));
         Check("unknown receipt version does not authorize replacement", () =>
             Reject<InvalidDataException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("broken"), owner, false)));
         Check("another owner cannot reinstall even an identical package", () =>

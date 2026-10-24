@@ -10,7 +10,7 @@
     <RootNamespace>NetPilot</RootNamespace>
     <Title>RtlineDnsPilot</Title>
     <Product>RtlineDnsPilot</Product>
-    <Version>0.1.10</Version><DebugType>None</DebugType><DebugSymbols>false</DebugSymbols>
+    <Version>0.1.11</Version><DebugType>None</DebugType><DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
   <ItemGroup><Compile Remove="Tests/**/*.cs" /></ItemGroup>
 </Project>

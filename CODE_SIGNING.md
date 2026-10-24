@@ -1,8 +1,8 @@
 # Code signing
 
-## Current status — 2026-10-23
+## Current status — 2026-10-24
 
-RtlineDnsPilot 0.1.10 is **unsigned**. No code-signing certificate or SignPath Foundation approval has been obtained. The project is preparing a free open-source application to [SignPath Foundation](https://signpath.org/). A prepared application, a published repository or a passing build does not mean that the Foundation has accepted the project.
+RtlineDnsPilot 0.1.11 is **unsigned**. No code-signing certificate or SignPath Foundation approval has been obtained. The project is preparing a free open-source application to [SignPath Foundation](https://signpath.org/). A prepared application, a published repository or a passing build does not mean that the Foundation has accepted the project.
 
 This page will be updated if signing is approved and a signed release is actually available. Until then, download pages must continue to describe builds as unsigned. A SHA-256 checksum verifies file integrity against a trusted published checksum; it does not establish publisher trust or replace Authenticode signing.
 

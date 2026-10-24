@@ -81,9 +81,11 @@ public sealed class DnsSessionManager
         await gate.WaitAsync();
         try
         {
+            if (!Guid.TryParse(adapterId, out var id)) throw new ArgumentException("Некорректный GUID адаптера.", nameof(adapterId));
+            if (operation == DnsOperation.Automatic && !managed && HasJournal)
+                await RestoreCoreAsync(automaticResetAdapterId: id.ToString("D"));
             if (managed || requiresJournal || HasJournal)
                 throw new InvalidOperationException("Сначала восстановите исходный DNS: активен или не завершён предыдущий журнал.");
-            if (!Guid.TryParse(adapterId, out var id)) throw new ArgumentException("Некорректный GUID адаптера.", nameof(adapterId));
             var original = await ReadValidatedAsync(id.ToString("D"));
             if (operation == DnsOperation.Relay && !original.IPv4.Enabled) throw new InvalidOperationException("Для локального посредника требуется включённый IPv4. Привязки протоколов не изменены.");
             if (!original.IPv4.Enabled && !original.IPv6.Enabled) throw new InvalidOperationException("На адаптере нет включённого IPv4 или IPv6. Привязки протоколов не изменены.");
@@ -158,7 +160,20 @@ public sealed class DnsSessionManager
         finally { gate.Release(); }
     }
 
-    private async Task RestoreCoreAsync()
+    // The elevated installer calls this only after the owned service has stopped.
+    // Preserve a user's already verified automatic choice while keeping the original.
+    internal async Task RestoreForServiceUpdateAsync()
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (managed) throw new InvalidOperationException("Обновление требует сначала остановить владельца DNS-посредника.");
+            await RestoreCoreAsync(preserveAutomaticForUpdate: true);
+        }
+        finally { gate.Release(); }
+    }
+
+    private async Task RestoreCoreAsync(string? automaticResetAdapterId = null, bool preserveAutomaticForUpdate = false)
     {
         if (!HasJournal)
         {
@@ -177,6 +192,9 @@ public sealed class DnsSessionManager
         }
         catch (Exception e) when (e is not UnauthorizedAccessException)
         { throw new InvalidDataException("Журнал DNS повреждён или имеет неподдерживаемый формат. Он сохранён, сеть не изменена.", e); }
+        var original = journal.Original!;
+        if (automaticResetAdapterId is not null && Guid.Parse(original.AdapterId) != Guid.Parse(automaticResetAdapterId))
+            throw new InvalidOperationException("Незавершённый журнал относится к другому адаптеру. Его DNS и исходные настройки сохранены.");
         managed = false;
         if (journal.PendingWriterPid is int pendingPid && journal.PendingWriterStartUtcTicks is long pendingStart)
         {
@@ -192,30 +210,37 @@ public sealed class DnsSessionManager
             Save(journal);
         }
         if (journal.Finished) { DeleteCompletedJournal(); return; }
-        var original = journal.Original!;
-        var current = await ReadValidatedAsync(original.AdapterId);
-
-        // Preflight every still-owned family before making any restoration write.
-        foreach (var family in new[] { DnsFamily.IPv6, DnsFamily.IPv4 }.Where(x => Touched(journal, x)))
-            RequireRestorable(DnsState.Family(current, family), DnsState.Family(original, family), journal.Operation, RestorationStarted(journal, family));
-
         var failures = new List<Exception>();
         foreach (var family in new[] { DnsFamily.IPv6, DnsFamily.IPv4 }.Where(x => Touched(journal, x)))
         {
             try
             {
-                current = await ReadValidatedAsync(original.AdapterId);
+                var current = await ReadValidatedAsync(original.AdapterId);
                 var saved = DnsState.Family(original, family);
-                RequireRestorable(DnsState.Family(current, family), saved, journal.Operation, RestorationStarted(journal, family));
-                if (!DnsState.Verified(current, saved))
+                // Ordinary Restore still preserves and reports conflicts. An update
+                // never forces a new DHCP setting; it may retain a verified choice.
+                bool keepAutomatic = (automaticResetAdapterId is not null || preserveAutomaticForUpdate)
+                    && DnsState.Verified(current, Target(DnsOperation.Automatic, family));
+                if (keepAutomatic && preserveAutomaticForUpdate)
                 {
-                    // Record ownership of the ordered prefixes netsh can leave behind.
-                    // A later recovery never treats an unrelated partial list as ours.
-                    if (family == DnsFamily.IPv4) journal.IPv4RestorationStarted = true;
-                    else journal.IPv6RestorationStarted = true;
-                    journal.Version = 2;
-                    Save(journal);
-                    await RestoreFamilyAsync(journal, current, saved);
+                    ArchiveOriginal(journal);
+                    current = await ReadValidatedAsync(original.AdapterId);
+                    if (!DnsState.Verified(current, Target(DnsOperation.Automatic, family)))
+                        throw new IOException("DNS " + family + " изменился во время сохранения исходного снимка. Активный журнал сохранён; обновление остановлено.");
+                }
+                if (!keepAutomatic)
+                {
+                    RequireRestorable(DnsState.Family(current, family), saved, journal.Operation, RestorationStarted(journal, family));
+                    if (!DnsState.Verified(current, saved))
+                    {
+                        // Record ownership of the ordered prefixes netsh can leave behind.
+                        // A later recovery never treats an unrelated partial list as ours.
+                        if (family == DnsFamily.IPv4) journal.IPv4RestorationStarted = true;
+                        else journal.IPv6RestorationStarted = true;
+                        journal.Version = 2;
+                        Save(journal);
+                        await RestoreFamilyAsync(journal, current, saved);
+                    }
                 }
                 SetTouched(journal, family, false);
                 Save(journal);
@@ -230,6 +255,22 @@ public sealed class DnsSessionManager
         journal.Finished = true;
         Save(journal);
         DeleteCompletedJournal();
+    }
+
+    private void ArchiveOriginal(DnsJournal journal)
+    {
+        string archivePath = Path.Combine(Path.GetDirectoryName(journalPath)!, "dns-session.resolved-" + Guid.Parse(journal.SessionId).ToString("N") + ".json");
+        if (!File.Exists(archivePath))
+        {
+            AtomicStore.Write(archivePath, journal, protectFile);
+            return;
+        }
+        if (new FileInfo(archivePath).Length > 128 * 1024) throw new InvalidDataException("Архив исходного DNS имеет недопустимый размер. Активный журнал сохранён.");
+        var archived = AtomicStore.Read<DnsJournal>(archivePath) ?? throw new InvalidDataException("Архив исходного DNS пуст. Активный журнал сохранён.");
+        ValidateJournal(archived);
+        if (Guid.Parse(archived.SessionId) != Guid.Parse(journal.SessionId) || archived.Operation != journal.Operation
+            || JsonData.Encode(archived.Original) != JsonData.Encode(journal.Original))
+            throw new InvalidDataException("Архив исходного DNS не соответствует активному журналу. Оба файла сохранены.");
     }
 
     private async Task RestoreFamilyAsync(DnsJournal journal, AdapterDnsSnapshot current, DnsFamilySnapshot desired)
@@ -271,7 +312,8 @@ public sealed class DnsSessionManager
     {
         if (!DnsState.SameConfiguration(current, original) && !DnsState.SameConfiguration(current, Target(operation, original.Family))
             && !(restorationStarted && DnsState.IsOrderedStaticPrefix(current, original)))
-            throw new InvalidOperationException("Конфликт DNS " + original.Family + ": текущее состояние не совпадает с исходным или применённым NetPilot. Сторонняя настройка и журнал сохранены.");
+            throw new InvalidOperationException("Настройки DNS " + original.Family + " отличаются от сохранённых. Текущая настройка не перезаписана; исходные DNS и журнал сохранены."
+                + (current.Enabled && current.Source == DnsSource.Dhcp ? " Если нужно оставить автоматический DNS, нажмите «DNS автоматически (DHCP)»." : ""));
     }
     private void Save(DnsJournal journal) => AtomicStore.Write(journalPath, journal, protectFile);
     private void SavePendingWriter(DnsJournal journal, DnsCommandStillRunningException writer)

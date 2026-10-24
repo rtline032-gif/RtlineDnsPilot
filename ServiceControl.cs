@@ -217,13 +217,13 @@ internal static class ServiceInstaller
             if(previous!.Version!=AppVersion.Current) WriteReceipt(previous,sid);
             await ConfigureAndStartAsync(); return;
         }
-        if(installed) await RestoreAsync(false);
+        if(installed) await RestoreCoreAsync(false,forServiceUpdate:true);
         SecureDirectory(AppPaths.InstallDirectory);
         SecureDirectory(AppPaths.ServiceData);
         VerifyStateDirectory();
         // An earlier interrupted session must be restored, never overwritten by installation.
         var manager=new DnsSessionManager(AppPaths.ServiceData,protectFile:ProtectFileOwner);
-        if(manager.HasJournal) await manager.RestoreAsync();
+        if(manager.HasJournal) await manager.RestoreForServiceUpdateAsync();
         var config=AtomicStore.Read<AppConfig>(Path.Combine(AppPaths.ServiceData,"config.json"))??AppConfig.Defaults();
         config.ManagementRequested=false; config.Validate(); AtomicStore.Write(Path.Combine(AppPaths.ServiceData,"config.json"),config,ProtectFileOwner);
         ProtectFileOwner(Path.Combine(AppPaths.ServiceData,"config.json"));
@@ -391,7 +391,9 @@ internal static class ServiceInstaller
     internal static string[] ServiceConfigurationArguments() =>
         ["config",AppPaths.ServiceName,"binPath=","\""+AppPaths.InstalledExe+"\" --service","start=","auto","DisplayName=","RtlineDnsPilot DNS"];
 
-    public static async Task RestoreAsync(bool uninstall)
+    public static Task RestoreAsync(bool uninstall) => RestoreCoreAsync(uninstall);
+
+    private static async Task RestoreCoreAsync(bool uninstall, string? automaticResetAdapterId = null, bool forServiceUpdate = false)
     {
         RequireAdmin();
         VerifyStateDirectory();
@@ -411,8 +413,18 @@ internal static class ServiceInstaller
             }
             if(!stopped) throw new InvalidOperationException("Служба ещё работает; ручное восстановление не начато, чтобы не создать гонку.");
         }
+        if(automaticResetAdapterId is not null)
+        {
+            SecureDirectory(AppPaths.ServiceData);
+            VerifyStateDirectory();
+        }
         var manager=new DnsSessionManager(AppPaths.ServiceData,protectFile:ProtectFileOwner);
-        if(manager.HasJournal) await manager.RestoreAsync();
+        if(automaticResetAdapterId is not null) await manager.ResetAutomaticAsync(automaticResetAdapterId);
+        else if(manager.HasJournal)
+        {
+            if(forServiceUpdate) await manager.RestoreForServiceUpdateAsync();
+            else await manager.RestoreAsync();
+        }
         var path=Path.Combine(AppPaths.ServiceData,"config.json");
         if(AtomicStore.Read<AppConfig>(path) is AppConfig config)
         {
@@ -420,7 +432,10 @@ internal static class ServiceInstaller
             if(File.Exists(path+".bak")) ProtectFileOwner(path+".bak");
         }
         if(uninstall && ServiceClient.IsInstalled) await ScAsync("delete",AppPaths.ServiceName);
-        NativeServiceHost.Log(uninstall?"Служба удалена; DNS восстановлен. История сохранена.":"Ручное восстановление DNS выполнено; управление выключено.");
+        if(forServiceUpdate)
+            NativeServiceHost.Log("Управление DNS выключено перед обновлением службы.");
+        else if(automaticResetAdapterId is null)
+            NativeServiceHost.Log(uninstall?"Служба удалена; DNS восстановлен. История сохранена.":"Ручное восстановление DNS выполнено; управление выключено.");
     }
 
     public static async Task ResetAutomaticDnsAsync(string adapterId,string ownerSid)
@@ -435,13 +450,9 @@ internal static class ServiceInstaller
         // Validate the selected physical GUID before stopping a service or
         // changing any protected state. No adapter is inferred from its index.
         _=WindowsAdapters.Resolve(id.ToString("D"));
-        // Disables SCM restart, waits for the owned service, restores its exact
-        // journal without forcing conflicts, then persists management=false.
-        await RestoreAsync(false);
-        SecureDirectory(AppPaths.ServiceData);
-        VerifyStateDirectory();
-        var manager=new DnsSessionManager(AppPaths.ServiceData,protectFile:ProtectFileOwner);
-        await manager.ResetAutomaticAsync(id.ToString("D"));
+        // Stop the owned service first. The explicit automatic goal can retain
+        // already verified DHCP without restoring the user's former manual DNS.
+        await RestoreCoreAsync(false,id.ToString("D"));
         NativeServiceHost.Log("DNS выбранного адаптера переведён в автоматический режим. Управление выключено; служба остановлена.");
     }
 
