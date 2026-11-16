@@ -8,6 +8,18 @@ internal static class Program
         string? Value(string key) { int i=Array.IndexOf(args,key); return i>=0&&i+1<args.Length?args[i+1]:null; }
         try
         {
+            if(args.Contains(ApplicationReconnectLauncher.Command))
+            {
+                var request = ApplicationReconnectLauncher.Parse(args);
+                if (!ServiceInstaller.IsAdministrator) throw new UnauthorizedAccessException("Для сброса соединений подтвердите запрос администратора Windows из окна RtlineDnsPilot.");
+                var owner = NativeApplicationReconnectPlatform.ReadCaller(request.CallerId, request.CallerStartUtcTicks,
+                    Path.Combine(AppContext.BaseDirectory, "RtlineDnsPilot.exe"));
+                var result = ApplicationConnectionReset.Execute(request.Targets, owner, new NativeApplicationReconnectPlatform());
+                ApplicationConfiguration.Initialize();
+                MessageBox.Show(ApplicationReconnectLauncher.ResultMessage(result), "Переподключение приложений",
+                    MessageBoxButtons.OK, result.Failed > 0 || result.SkippedIpv6 > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+                return ApplicationReconnectLauncher.ResultCode(result);
+            }
             if(args.Contains("--service")) return NativeServiceHost.Run();
             if(args.Contains("--install-service")) { ServiceInstaller.InstallAsync(Value("--owner-sid")??throw new ArgumentException("Не указан SID пользователя."),forceRestart:args.Contains("--repair-service")).GetAwaiter().GetResult(); return 0; }
             if(args.Contains("--uninstall-service")) { ServiceInstaller.RestoreAsync(true).GetAwaiter().GetResult(); return 0; }

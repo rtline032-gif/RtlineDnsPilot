@@ -10,6 +10,8 @@ public sealed class MainForm : Form
     private readonly ApplicationUpdateLauncher _updateLauncher;
     private string? _updateFeedback;
     private string? _startupUpdateWarning;
+    private string? _connectionFeedback;
+    private readonly ApplicationReconnectLauncher _applicationReconnect = new();
     private CancellationTokenSource? _shareCancellation;
     private string? _shareFeedback;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 2500 };
@@ -27,6 +29,7 @@ public sealed class MainForm : Form
     private readonly Button _disable = MakeButton("Отключить управление");
     private readonly Button _restore = MakeButton("Восстановить DNS");
     private readonly Button _automaticDns = MakeButton("DNS автоматически (DHCP)");
+    private readonly Button _reconnectApplications = MakeButton("Переподключить приложения");
     private readonly Button _add = MakeButton("Добавить");
     private readonly Button _edit = MakeButton("Изменить");
     private readonly Button _delete = MakeButton("Удалить");
@@ -150,7 +153,8 @@ public sealed class MainForm : Form
         _share.FlatAppearance.MouseDownBackColor = Color.FromArgb(180, 221, 201);
         _share.Margin = new Padding(10, 0, 0, 6);
         _updateApplication.Name="UpdateApplication";
-        operationBar.Controls.AddRange([_monitor, _probe, _reconnect, _enable, _updateService, _disable, _restore, _automaticDns, _updateApplication, _share]);
+        _reconnectApplications.Name = "ReconnectApplications";
+        operationBar.Controls.AddRange([_monitor, _probe, _reconnect, _enable, _updateService, _disable, _restore, _automaticDns, _reconnectApplications, _updateApplication, _share]);
         root.Controls.Add(operationBar, 0, 1);
         var indicators = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Margin = new Padding(0, 0, 0, 9) };
         var progressSpace = new Panel { Width = 68, Height = 28, Margin = new Padding(0) };
@@ -240,6 +244,7 @@ public sealed class MainForm : Form
         _disable.Click += async (_, _) => await RestoreDnsAsync();
         _restore.Click += async (_, _) => await RestoreDnsAsync();
         _automaticDns.Click += async (_, _) => await ResetAutomaticDnsAsync();
+        _reconnectApplications.Click += async (_, _) => await ReconnectApplicationsAsync();
         _add.Click += async (_, _) => await EditProfileAsync(true);
         _edit.Click += async (_, _) => await EditProfileAsync(false);
         _delete.Click += async (_, _) => await DeleteProfileAsync();
@@ -527,7 +532,7 @@ public sealed class MainForm : Form
             if (!IsDisposed && !_busy)
             {
                 UpdateView();
-                _activity.Text = _updateFeedback ?? _shareFeedback ?? "Обновлено " + DateTime.Now.ToString("HH:mm:ss");
+                _activity.Text = _connectionFeedback ?? _updateFeedback ?? _shareFeedback ?? "Обновлено " + DateTime.Now.ToString("HH:mm:ss");
             }
         }
     }
@@ -539,6 +544,7 @@ public sealed class MainForm : Form
         _busy = true;
         _shareFeedback = null;
         _updateFeedback = null;
+        _connectionFeedback = null;
         _activity.ForeColor = SystemColors.ControlText;
         _activity.Text = activity + (_refreshing ? " · ожидание текущего запроса…" : "…");
         UpdateButtons();
@@ -555,7 +561,7 @@ public sealed class MainForm : Form
             if (!IsDisposed)
             {
                 UpdateView();
-                _activity.Text = _updateFeedback ?? _shareFeedback ?? "Обновлено " + DateTime.Now.ToString("HH:mm:ss");
+                _activity.Text = _connectionFeedback ?? _updateFeedback ?? _shareFeedback ?? "Обновлено " + DateTime.Now.ToString("HH:mm:ss");
             }
         }
     }
@@ -730,13 +736,14 @@ public sealed class MainForm : Form
         _alert.Text = string.Join("\r\n", messages.Distinct());
         _alert.Visible = _alert.Text.Length > 0;
         var selectedId = SelectedProfile()?.Id;
+        var selectedColumn = _grid.CurrentCell?.OwningColumn?.Name;
         var firstVisible = _grid.FirstDisplayedScrollingRowIndex;
         var now = DateTimeOffset.UtcNow;
         _grid.Rows.Clear();
         SyncServiceColumns(status.Config);
-        foreach (var profile in status.Config.Profiles)
+        DataGridViewRow? selectedRow = null;
+        foreach (var (profile, statistics) in ChannelTableOrder.Build(status.Config, status.Statistics, now))
         {
-            var statistics = MonitoringTargets.View(status.Statistics.FirstOrDefault(s => s.ProfileId == profile.Id), status.Config);
             var last = statistics?.Last;
             var availability = Availability(profile.Enabled, last, status.Config, now);
             var label = availability switch
@@ -781,9 +788,15 @@ public sealed class MainForm : Form
                     cell.Style.SelectionForeColor = Color.FromArgb(139, 26, 22);
                 }
             }
-            if (profile.Id == selectedId) row.Selected = true;
+            if (profile.Id == selectedId) selectedRow = row;
         }
-        if (selectedId is not null && !_grid.Rows.Cast<DataGridViewRow>().Any(r => Equals(r.Tag, selectedId)) && _grid.Rows.Count > 0) _grid.Rows[0].Selected = true;
+        selectedRow ??= _grid.Rows.Cast<DataGridViewRow>().FirstOrDefault();
+        if (selectedRow is not null)
+        {
+            _grid.CurrentCell = selectedRow.Cells[selectedColumn is not null && _grid.Columns.Contains(selectedColumn) ? selectedColumn : "name"];
+            _grid.ClearSelection();
+            selectedRow.Selected = true;
+        }
         // A taller recovery banner can temporarily leave no complete row at minimum window height.
         if (firstVisible >= 0 && firstVisible < _grid.Rows.Count && _grid.DisplayedRowCount(false) > 0) _grid.FirstDisplayedScrollingRowIndex = firstVisible;
         var preferred = status.Config.Profiles.FirstOrDefault(p => p.Id == status.Config.PinnedProfileId)?.Name;
@@ -934,6 +947,25 @@ public sealed class MainForm : Form
     }
 
     private static string AutomaticModeName(AutoSelectionMode mode) => mode == AutoSelectionMode.Fast ? "Самый быстрый" : "Самый стабильный";
+    private async Task ReconnectApplicationsAsync()
+    {
+        if (_busy) return;
+        using var dialog = new ApplicationReconnectDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        await RunAsync(async () =>
+        {
+            var outcome = await _applicationReconnect.RunAsync(dialog.Targets);
+            _connectionFeedback = outcome switch
+            {
+                ApplicationReconnectOutcome.Completed => "Соединения выбранных приложений сброшены. Повторите запрос.",
+                ApplicationReconnectOutcome.NoConnections => "DNS-кэш очищен; подходящих TCP/IPv4-соединений для сброса не найдено.",
+                ApplicationReconnectOutcome.Partial => "Переподключение выполнено частично. Ошибки указаны в отчёте помощника.",
+                ApplicationReconnectOutcome.Ipv6Remaining => "Сброс TCP/IPv4 завершён; соединения IPv6 остались. См. отчёт помощника.",
+                _ => "Переподключение отменено в окне Windows."
+            };
+            AddUiEvent(_connectionFeedback, outcome is ApplicationReconnectOutcome.Partial or ApplicationReconnectOutcome.Ipv6Remaining ? "warning" : "info");
+        }, "Переподключение приложений");
+    }
     private static string AutomaticModeShort(AutoSelectionMode mode) => mode == AutoSelectionMode.Fast ? "скорость" : "стабильность";
     private Task ApplyAutomaticModeAsync(AutoSelectionMode mode) => RunAsync(() => _backend.SelectAutomaticAsync(mode), "Автовыбор: " + AutomaticModeName(mode).ToLowerInvariant());
 
@@ -971,6 +1003,8 @@ public sealed class MainForm : Form
         _disable.Enabled = !_busy && (status.ServiceConnected || _backend.DnsStateUnknown);
         _restore.Enabled = _disable.Enabled;
         _automaticDns.Enabled = !_busy && _adapter.SelectedItem is AdapterInfo;
+        _reconnectApplications.Enabled = !_busy;
+        _tips.SetToolTip(_reconnectApplications, "Вручную очистить системный DNS-кэш и сбросить внешние TCP/IPv4-соединения HTTPS выбранных Chrome/Codex без закрытия окон. Нужны права администратора; текущие запросы прервутся. IPv6, QUIC и внутренний кэш приложений не сбрасываются.");
         _edit.Enabled = !_busy && SelectedProfile() is not null;
         _delete.Enabled = !_busy && SelectedProfile() is not null && status.Config.Profiles.Count > 1;
         _prefer.Enabled = !_busy && SelectedProfile() is { Enabled: true };

@@ -1,6 +1,6 @@
 {
-  "version": "0.1.16",
-  "title": "RtlineDnsPilot 0.1.16 — резервные IP при проверке HTTPS",
-  "notes": "release-notes-0.1.16.md",
+  "version": "0.1.17",
+  "title": "RtlineDnsPilot 0.1.17 — рабочие каналы сверху и переподключение приложений",
+  "notes": "release-notes-0.1.17.md",
   "prerelease": true
 }

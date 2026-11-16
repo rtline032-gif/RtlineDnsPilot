@@ -21,6 +21,8 @@ public static class CoreTests
         if(args.Contains("--ui-sync-only")) { await UiPersistenceTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--import-only")) { ProfileImportTests.Run(Report); await UiPersistenceTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--catalog-toggle-only")) { await BundledChannelTests.RunAsync(Report); ServiceUpgradeTests.Run(Report); await ChannelToggleTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--channel-table-only")) { await ChannelTableOrderTests.RunAsync(Report); await ChannelToggleTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--reconnect-applications-only")) { ApplicationConnectionResetTests.Run(Report); await ApplicationReconnectLauncherTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--probe-diagnostics-only")) { await ProbeDiagnosticsTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--monitoring-only")) { await MonitoringTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--manual-only")) { await ManualSelectionTests.RunAsync(Report); return failures==0?0:1; }
@@ -46,6 +48,9 @@ public static class CoreTests
         ProfileConfigurationTests.Run(Report);
         ProfileImportTests.Run(Report);
         await ChannelToggleTests.RunAsync(Report);
+        await ChannelTableOrderTests.RunAsync(Report);
+        ApplicationConnectionResetTests.Run(Report);
+        await ApplicationReconnectLauncherTests.RunAsync(Report);
         await ProbeDiagnosticsTests.RunAsync(Report);
         await UiPersistenceTests.RunAsync(Report);
         ServiceUpgradeTests.Run(Report);
