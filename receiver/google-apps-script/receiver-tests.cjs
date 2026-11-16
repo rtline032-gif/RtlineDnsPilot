@@ -154,8 +154,8 @@ test('body length is bounded by UTF8 bytes, malformed JSON/type/path rejected',(
       assert.equal(JSON.parse(f.api.doPost(event).text).Error,'invalid_request');
   assert.equal(f.calls.length,before);
 });
-test('all 15 base configurations reject, including reordered address arrays',()=>{
-  const f=fixture();assert.equal(f.api.BASE_PROFILES_.length,15);
+test('all 26 base configurations reject, including reordered address arrays',()=>{
+  const f=fixture();assert.equal(f.api.BASE_PROFILES_.length,26);
   for(const b of f.api.BASE_PROFILES_) {
     const x=fixture();const p={Mode:b[0],Servers:Array.from(b[1]).reverse(),DnsPort:b[2],DohUrl:b[3],WorkedServices:['gemini']};
     const before=x.calls.length;assert.equal(x.post([p]).Error,'invalid_request');assert.equal(x.calls.length,before);

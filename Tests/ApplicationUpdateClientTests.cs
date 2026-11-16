@@ -218,12 +218,12 @@ public static class ApplicationUpdateClientTests
 
     private static object Release(string version, bool draft = false, string? digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", string? url = null, bool duplicate = false)
     {
-        string tag = "v" + version; string name = "RtlineDnsPilot-" + version + "-win-x64.zip";
+        string tag = "v" + version; string name = RuntimeCompatibility.ArchiveName(version);
         var asset = new { name, browser_download_url = url ?? Root + "/releases/download/" + tag + "/" + name, size = 1234, digest, state = "uploaded" };
         return new { tag_name = tag, html_url = Root + "/releases/tag/" + tag, draft, prerelease = true, published_at = draft ? null : "2026-10-24T08:00:00Z", assets = duplicate ? new[] { asset, asset } : new[] { asset } };
     }
-    private static ApplicationRelease Offer(byte[] archive) => new("0.1.11", "v0.1.11", Root + "/releases/tag/v0.1.11", Root + "/releases/download/v0.1.11/RtlineDnsPilot-0.1.11-win-x64.zip", archive.Length, Hash(archive), true);
-    private static string Hash(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
+    private static ApplicationRelease Offer(byte[] archive) => new("0.1.11", "v0.1.11", Root + "/releases/tag/v0.1.11", Root + "/releases/download/v0.1.11/" + RuntimeCompatibility.ArchiveName("0.1.11"), archive.Length, Hash(archive), true);
+    private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     private static HttpResponseMessage Json(object value) => Bytes(JsonSerializer.SerializeToUtf8Bytes(value));
     private static HttpResponseMessage Bytes(byte[] value) => new(HttpStatusCode.OK) { Content = new ByteArrayContent(value) };
     private static HttpResponseMessage Redirect(string uri) { var response = new HttpResponseMessage(HttpStatusCode.Found); response.Headers.Location = new Uri(uri); return response; }

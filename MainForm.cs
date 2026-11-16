@@ -30,7 +30,7 @@ public sealed class MainForm : Form
     private readonly Button _add = MakeButton("Добавить");
     private readonly Button _edit = MakeButton("Изменить");
     private readonly Button _delete = MakeButton("Удалить");
-    private readonly Button _import = MakeButton("Импорт JSON");
+    private readonly Button _import = MakeButton("Добавить из JSON");
     private readonly Button _export = MakeButton("Экспорт JSON");
     private readonly Button _share = MakeButton("Поделиться DNS");
     private readonly Button _prefer = MakeButton("Предпочитать выбранный");
@@ -115,7 +115,7 @@ public sealed class MainForm : Form
         _shareClient = shareClient;
         _applicationUpdates=applicationUpdates;
         _updateLauncher=updateLauncher;
-        Text = "RtlineDnsPilot " + AppVersion.Current + " — каналы DNS и проверка HTTPS";
+        Text = "RtlineDnsPilot " + AppVersion.Current + RuntimeCompatibility.TitleSuffix + " — каналы DNS и проверка HTTPS";
         Icon = SystemIcons.Application;
         Font = new Font("Segoe UI", 9F);
         AutoScaleDimensions = new SizeF(96F, 96F);
@@ -255,14 +255,26 @@ public sealed class MainForm : Form
         _apply.Click += async (_, _) => await ApplySettingsAsync();
         _applyTargets.Click += async (_, _) => await ApplySettingsAsync();
         _grid.SelectionChanged += (_, _) => UpdateButtons();
-        _grid.CellDoubleClick += async (_, e) => { if (e.RowIndex >= 0) await EditProfileAsync(false); };
+        _grid.CellClick += async (_, e) =>
+        {
+            if (e.RowIndex >= 0 && e.ColumnIndex == _grid.Columns["enabled"].Index && _grid.Rows[e.RowIndex].Tag is string id)
+                await ToggleChannelAsync(id);
+        };
+        _grid.CellDoubleClick += async (_, e) => { if (e.RowIndex >= 0 && e.ColumnIndex != _grid.Columns["enabled"].Index) await EditProfileAsync(false); };
         _grid.CellMouseClick += (_, e) =>
         {
             if (e.Button == MouseButtons.Right && e.RowIndex >= 0)
                 OpenChannelMenu(e.RowIndex, _grid.PointToClient(Cursor.Position));
         };
-        _grid.KeyDown += (_, e) =>
+        _grid.KeyDown += async (_, e) =>
         {
+            if (e.KeyCode == Keys.Space && _grid.CurrentCell is { } cell && cell.ColumnIndex == _grid.Columns["enabled"].Index
+                && _grid.Rows[cell.RowIndex].Tag is string id)
+            {
+                e.Handled = e.SuppressKeyPress = true;
+                await ToggleChannelAsync(id);
+                return;
+            }
             if (e.KeyCode != Keys.Apps && !(e.Shift && e.KeyCode == Keys.F10)) return;
             if (_grid.SelectedRows.Count == 0) return;
             var row = _grid.SelectedRows[0];
@@ -750,8 +762,10 @@ public sealed class MainForm : Form
             row.Cells["p95"].Value = statistics is not null && statistics.Samples.Any(s => s.Success) ? Milliseconds(statistics.P95Ms) : "—";
             row.Cells["count"].Value = statistics?.Samples.Count.ToString() ?? "0";
             row.Tag = profile.Id;
-            row.Cells["name"].ToolTipText = profile.Name + (!string.IsNullOrEmpty(profile.Note) ? "\r\n" + profile.Note : "");
-            row.Cells["result"].ToolTipText = last is null ? "Проверок ещё не было." : $"{last.At.ToLocalTime():dd.MM.yyyy HH:mm:ss}\r\n{(availability == ChannelAvailability.Outdated ? "Нет свежих данных. Запустите новую проверку.\r\n" : "")}{last.Stage}: {last.Detail}";
+            var currentDetail = last is null ? "Проверок ещё не было." : $"Последняя проверка: {last.At.ToLocalTime():dd.MM.yyyy HH:mm:ss}\r\n{(availability == ChannelAvailability.Outdated ? "Нет свежих данных. Запустите новую проверку.\r\n" : "")}{last.Stage}: {last.Detail}";
+            row.Cells["enabled"].ToolTipText = profile.Enabled ? "Нажмите, чтобы выключить канал." : "Нажмите, чтобы включить канал.";
+            row.Cells["name"].ToolTipText = profile.Name + "\r\n" + currentDetail + (!string.IsNullOrEmpty(profile.Note) ? "\r\n\r\nПримечание к профилю (не текущая проверка):\r\n" + profile.Note : "");
+            row.Cells["result"].ToolTipText = currentDetail;
             row.Cells["count"].ToolTipText = statistics is null ? "Проверок ещё не было." : $"В окне статистики: {statistics.Samples.Count}. Всего проверок: {statistics.TotalChecks}, успешных: {statistics.TotalSuccesses}.";
             ApplyAvailabilityColors(row, availability, !_backend.DnsStateUnknown && profile.Id == status.ActiveProfileId);
             foreach (var target in MonitoringTargets.Selected(status.Config))
@@ -1231,6 +1245,21 @@ public sealed class MainForm : Form
         }, "Сохранение канала");
     }
 
+    internal async Task ToggleChannelAsync(string profileId)
+    {
+        if (_busy || !_backend.Status.Config.Profiles.Any(p => p.Id == profileId)) return;
+        await RunAsync(async () =>
+        {
+            var config = JsonData.Clone(_backend.Status.Config);
+            var profile = config.Profiles.Single(p => p.Id == profileId);
+            profile.Enabled = !profile.Enabled;
+            if (!profile.Enabled && config.PinnedProfileId == profile.Id) config.PinnedProfileId = null;
+            if (!profile.Enabled && config.ManualProfileId == profile.Id) { config.ManualProfileId = null; config.ManualUntil = null; }
+            await _backend.ConfigureAsync(config);
+            AddUiEvent($"Канал «{profile.Name}» {(profile.Enabled ? "включён" : "выключен")}.");
+        }, "Изменение участия канала");
+    }
+
     private async Task DeleteProfileAsync(string? profileId = null)
     {
         var profile = profileId is null ? SelectedProfile() : _backend.Status.Config.Profiles.FirstOrDefault(p => p.Id == profileId);
@@ -1248,21 +1277,23 @@ public sealed class MainForm : Form
 
     private async Task ImportAsync()
     {
-        using var dialog = new OpenFileDialog { Title = "Импорт каналов", Filter = "Каналы JSON (*.json)|*.json|Все файлы (*.*)|*.*", CheckFileExists = true };
+        if (_busy) return;
+        using var dialog = new OpenFileDialog { Title = "Добавить каналы из JSON", Filter = "Каналы JSON (*.json)|*.json|Все файлы (*.*)|*.*", CheckFileExists = true };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         List<ChannelProfile> profiles;
         try { profiles = UiBackend.ReadProfiles(dialog.FileName); }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "Импорт каналов", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
-        if (MessageBox.Show(this, $"Заменить текущий список ({_backend.Status.Config.Profiles.Count}) каналами из файла ({profiles.Count})?\r\nПараметры проверки и адаптер сохранятся. Будет включён автовыбор.", "Импорт каналов", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+        ProfileImportResult? completed = null;
         await RunAsync(async () =>
         {
-            var config = JsonData.Clone(_backend.Status.Config);
-            config.Profiles = profiles;
-            config.PinnedProfileId = null;
-            config.ManualProfileId = null;
-            config.ManualUntil = null;
-            await _backend.ConfigureAsync(config);
-        }, "Импорт каналов");
+            var result = ProfileImport.Merge(_backend.Status.Config, profiles);
+            if (result.Added > 0) await _backend.ConfigureAsync(result.Config);
+            completed = result;
+            AddUiEvent($"Импорт: добавлено {result.Added}, дубликатов пропущено {result.Duplicates}, переименовано {result.Renamed}. Всего каналов: {result.Config.Profiles.Count}.");
+        }, "Добавление каналов из JSON");
+        if (completed is { } imported)
+            MessageBox.Show(this, $"Добавлено каналов: {imported.Added}.\r\nПропущено дубликатов: {imported.Duplicates}.\r\nПереименовано из-за совпадения названий: {imported.Renamed}.\r\nВсего каналов: {imported.Config.Profiles.Count}.\r\n\r\nСуществующие каналы и настройки выбора сохранены.",
+                "Импорт каналов завершён", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void Export()

@@ -6,11 +6,22 @@ public static class CoreTests
     {
         int failures = 0;
         void Report(string name,bool ok,string message) { Console.WriteLine((ok ? "PASS " : "FAIL ") + name + (message.Length == 0 ? "" : ": " + message)); if (!ok) failures++; }
+        if(args.Contains("--win7-only"))
+        {
+            await Windows7CompatibilityTests.RunAsync(Report);
+#if LEGACY_WINDOWS
+            await LegacyJsonTests.RunAsync(Report);
+#endif
+            return failures==0?0:1;
+        }
         if(args.Contains("--rpc-only")) { await RpcTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--transactions-only")) { await TransactionTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--dns-recovery-only")) { await TransactionTests.RunAsync(Report); await DnsRecoveryCommandTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--application-update-only")) { await ApplicationUpdateClientTests.RunAsync(Report); await ApplicationUpdateLauncherTests.RunAsync(Report); await ApplicationUpdateUiTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--ui-sync-only")) { await UiPersistenceTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--import-only")) { ProfileImportTests.Run(Report); await UiPersistenceTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--catalog-toggle-only")) { await BundledChannelTests.RunAsync(Report); ServiceUpgradeTests.Run(Report); await ChannelToggleTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--probe-diagnostics-only")) { await ProbeDiagnosticsTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--monitoring-only")) { await MonitoringTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--manual-only")) { await ManualSelectionTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--automatic-dns-only")) { await AutomaticDnsTests.RunAsync(Report); return failures==0?0:1; }
@@ -33,6 +44,9 @@ public static class CoreTests
         InstallSafetyTests.Run(Report);
         await RpcTests.RunAsync(Report);
         ProfileConfigurationTests.Run(Report);
+        ProfileImportTests.Run(Report);
+        await ChannelToggleTests.RunAsync(Report);
+        await ProbeDiagnosticsTests.RunAsync(Report);
         await UiPersistenceTests.RunAsync(Report);
         ServiceUpgradeTests.Run(Report);
         await BundledChannelTests.RunAsync(Report);
@@ -56,6 +70,10 @@ public static class CoreTests
         await ApplicationUpdateClientTests.RunAsync(Report);
         await ApplicationUpdateLauncherTests.RunAsync(Report);
         await ApplicationUpdateUiTests.RunAsync(Report);
+        await Windows7CompatibilityTests.RunAsync(Report);
+#if LEGACY_WINDOWS
+        await LegacyJsonTests.RunAsync(Report);
+#endif
         return failures == 0 ? 0 : 1;
     }
     public static void Run(Action<string,bool,string> report)

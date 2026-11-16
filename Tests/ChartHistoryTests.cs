@@ -96,7 +96,7 @@ public static class ChartHistoryTests
         {
             var profile = JsonData.Clone(config.Profiles[0]);
             var key = ChartHistoryArchive.ContextKey(profile, MonitoringTargets.Key(config));
-            profile.Servers = profile.Servers.Reverse().ToArray(); profile.Name = "Other"; profile.Note = "Note"; profile.Enabled = false; profile.DnsPort = 9953;
+            profile.Servers = profile.Servers.AsEnumerable().Reverse().ToArray(); profile.Name = "Other"; profile.Note = "Note"; profile.Enabled = false; profile.DnsPort = 9953;
             Require(key == ChartHistoryArchive.ContextKey(profile, MonitoringTargets.Key(config)), "Irrelevant DoH or label changes reset history.");
             profile.DohUrl = "https://other.example/dns-query";
             Require(key != ChartHistoryArchive.ContextKey(profile, MonitoringTargets.Key(config)), "DoH URL changes did not isolate history.");

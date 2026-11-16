@@ -80,7 +80,7 @@ public static class DnsSharing
     public static DnsShareCandidate NormalizeCandidate(DnsShareCandidate source)
     {
         ArgumentNullException.ThrowIfNull(source);
-        if (!Enum.IsDefined(source.Mode) || source.Servers is null || source.Servers.Length is < 1 or > 8
+        if (!Enum.IsDefined(typeof(DnsMode), source.Mode) || source.Servers is null || source.Servers.Length is < 1 or > 8
             || source.DnsPort is < 1 or > 65535 || source.WorkedServices is null || source.WorkedServices.Length is < 1 or > 2)
             throw new ArgumentException("Некорректный канал для отправки.");
         var servers = source.Servers.Select(value =>
@@ -150,8 +150,8 @@ public static class DnsSharing
     private static bool PublicHost(string host)
     {
         var labels = host.ToLowerInvariant().Split('.');
-        return labels.Length >= 2 && labels.All(label => label.Length is >= 1 and <= 63 && char.IsAsciiLetterOrDigit(label[0])
-            && char.IsAsciiLetterOrDigit(label[^1]) && label.All(c => char.IsAsciiLetterOrDigit(c) || c == '-'))
-            && labels[^1].Any(char.IsAsciiLetter) && labels[^1] is not ("local" or "localhost" or "internal" or "lan" or "home" or "invalid" or "test" or "example");
+        return labels.Length >= 2 && labels.All(label => label.Length is >= 1 and <= 63 && RuntimeCompatibility.IsAsciiLetterOrDigit(label[0])
+            && RuntimeCompatibility.IsAsciiLetterOrDigit(label[^1]) && label.All(c => RuntimeCompatibility.IsAsciiLetterOrDigit(c) || c == '-'))
+            && labels[^1].Any(RuntimeCompatibility.IsAsciiLetter) && labels[^1] is not ("local" or "localhost" or "internal" or "lan" or "home" or "invalid" or "test" or "example");
     }
 }

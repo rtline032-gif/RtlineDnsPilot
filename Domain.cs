@@ -22,7 +22,7 @@ public sealed class ChannelProfile
     {
         if ((Id?.Length ?? 0)>68 || !Guid.TryParse(Id, out _) || string.IsNullOrWhiteSpace(Name) || Name.Length > 100)
             throw new ArgumentException("У канала должны быть уникальный ID и название до 100 символов.");
-        if (!Enum.IsDefined(Mode) || DnsPort < 1 || DnsPort > 65535 || Servers is null || Servers.Length is < 1 or > 8)
+        if (!Enum.IsDefined(typeof(DnsMode), Mode) || DnsPort < 1 || DnsPort > 65535 || Servers is null || Servers.Length is < 1 or > 8)
             throw new ArgumentException("Укажите от 1 до 8 IP-адресов DNS и корректный порт.");
         var addresses = new HashSet<IPAddress>();
         foreach (var value in Servers)
@@ -63,7 +63,7 @@ public sealed class AppConfig
     public void Validate()
     {
         if (Version != 1) throw new ArgumentException("Поддерживается формат конфигурации 1.");
-        if (!Enum.IsDefined(AutoSelection)) throw new ArgumentException("Выберите режим автовыбора: самый стабильный или самый быстрый.");
+        if (!Enum.IsDefined(typeof(AutoSelectionMode), AutoSelection)) throw new ArgumentException("Выберите режим автовыбора: самый стабильный или самый быстрый.");
         ValidateProfiles(Profiles);
         MonitoringTargets.Validate(this);
         if (IntervalSeconds is < 10 or > 3600 || TimeoutSeconds is < 2 or > 30) throw new ArgumentException("Интервал: 10–3600 с, тайм-аут: 2–30 с.");
@@ -253,6 +253,12 @@ public static class JsonData
         Converters = { new JsonStringEnumConverter() }
     };
     public static string Encode<T>(T value) => JsonSerializer.Serialize(value, Options);
-    public static T Decode<T>(string json) => JsonSerializer.Deserialize<T>(json, Options) ?? throw new InvalidDataException("Пустой JSON.");
+    public static T Decode<T>(string json)
+    {
+#if LEGACY_WINDOWS
+        LegacyJson.Validate<T>(json, Options);
+#endif
+        return JsonSerializer.Deserialize<T>(json, Options) ?? throw new InvalidDataException("Пустой JSON.");
+    }
     public static T Clone<T>(T value) => Decode<T>(Encode(value));
 }

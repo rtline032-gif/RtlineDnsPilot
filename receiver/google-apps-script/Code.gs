@@ -3,21 +3,32 @@ const LIMITS_ = Object.freeze({ Body: 96 * 1024, Profiles: 32, Attempts: 5, Dail
   Bytes: 256 * 1024, Invites: 200, PublicMinuteRequests: 10, PublicDailyRequests: 200 });
 const CATALOG_MARKER_ = 'rtlineDnsPilotSharedDnsV1';
 const BASE_PROFILES_ = [
-  ['Doh', ['111.88.96.54','111.88.96.55'],53,'https://xbox-dns.ru/dns-query'],
-  ['Doh', ['181.215.40.49','31.58.216.201'],53,'https://dns.bezmezhau.com/dns-query'],
-  ['Doh', ['194.87.196.13','45.151.102.219','2a00:b700:0005:0000:0000:0000:0003:0062','2a12:5940:d4ef:0000:0000:0000:0000:0219'],53,'https://dns.dns-ai.ru/dns-query'],
-  ['Udp', ['111.88.96.54','111.88.96.55'],53,''],
-  ['Udp', ['181.215.40.49','31.58.216.201'],53,''],
-  ['Doh', ['195.133.25.16'],53,'https://dns.comss.one/dns-query'],
-  ['Doh', ['83.220.169.155','212.109.195.93'],53,'https://dns.comss.one/dns-query'],
-  ['Udp', ['83.220.169.155','212.109.195.93'],53,''],
-  ['Udp', ['159.194.200.33','37.230.192.51'],53,''],
-  ['Doh', ['193.233.244.38'],53,'https://dns.dagami.ru/dns-query'],
-  ['Udp', ['193.233.244.38'],53,''],
-  ['Doh', ['83.217.211.149'],53,'https://dns.zapret.moe/dns-query'],
-  ['Udp', ['83.217.211.149'],53,''],
-  ['Doh', ['179.254.166.171'],53,'https://dns.malw.link/dns-query'],
-  ['Udp', ['179.254.166.171','164.5.224.81'],53,'']
+  ["Doh",["111.88.96.54","111.88.96.55"],53,"https://xbox-dns.ru/dns-query"],
+  ["Doh",["181.215.40.49","31.58.216.201"],53,"https://dns.bezmezhau.com/dns-query"],
+  ["Doh",["194.87.196.13","45.151.102.219","2a00:b700:5::3:62","2a12:5940:d4ef::219"],53,"https://dns.dns-ai.ru/dns-query"],
+  ["Udp",["111.88.96.54","111.88.96.55"],53,""],
+  ["Udp",["181.215.40.49","31.58.216.201"],53,""],
+  ["Doh",["195.133.25.16"],53,"https://dns.comss.one/dns-query"],
+  ["Doh",["83.220.169.155","212.109.195.93"],53,"https://dns.comss.one/dns-query"],
+  ["Udp",["83.220.169.155","212.109.195.93"],53,""],
+  ["Udp",["159.194.200.33","37.230.192.51"],53,""],
+  ["Doh",["193.233.244.38"],53,"https://dns.dagami.ru/dns-query"],
+  ["Udp",["193.233.244.38"],53,""],
+  ["Doh",["83.217.211.149"],53,"https://dns.zapret.moe/dns-query"],
+  ["Udp",["83.217.211.149"],53,""],
+  ["Doh",["179.254.166.171"],53,"https://dns.malw.link/dns-query"],
+  ["Udp",["179.254.166.171","164.5.224.81"],53,""],
+  ["Doh",["217.144.190.216","109.120.187.249"],53,"https://api.magicinfo.art/rpc"],
+  ["Udp",["217.144.190.216","109.120.187.249"],53,""],
+  ["Doh",["217.144.190.216","109.120.187.249"],53,"https://dns.magicdns.ru/dns-query"],
+  ["Doh",["48.102.213.179"],53,"https://dns.dagami.ru/dns-query"],
+  ["Udp",["48.102.213.179"],53,""],
+  ["Doh",["48.102.213.179"],53,"https://dns.dagami.ru/dns-lab/de"],
+  ["Doh",["159.194.200.33","37.230.192.51"],53,"https://geohide.ru/dns-query"],
+  ["Doh",["38.180.241.191"],53,"https://dns.zapret.moe/dns-query"],
+  ["Udp",["38.180.241.191"],53,""],
+  ["Doh",["172.67.157.232","104.21.82.125"],53,"https://cf.dns-ai.ru/dns-query"],
+  ["Doh",["94.181.44.39"],53,"https://dns.commonnet.work/dns-query"]
 ];
 
 // Run these owner helpers in the Apps Script editor. None is exposed by doPost/doGet.

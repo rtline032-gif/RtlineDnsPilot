@@ -2,6 +2,9 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+#if NET6_0
+using TcpListener = NetPilot.Tests.LegacyTestTcpListener;
+#endif
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;

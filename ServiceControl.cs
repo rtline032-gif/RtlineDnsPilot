@@ -8,6 +8,11 @@ using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Text.Json;
 using Microsoft.Win32;
+#if LEGACY_WINDOWS
+using JsonRequiredAttribute = NetPilot.LegacyJsonRequiredAttribute;
+#else
+using JsonRequiredAttribute = System.Text.Json.Serialization.JsonRequiredAttribute;
+#endif
 
 namespace NetPilot;
 
@@ -115,7 +120,7 @@ internal sealed class ServiceRpc(MonitorEngine engine,string ownerSid,string pip
         acl.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(ownerSid),PipeAccessRights.ReadWrite,AccessControlType.Allow));
         // The fixed first instance prevents silently attaching to an already occupied control pipe.
         using var pipe=NamedPipeServerStreamAcl.Create(pipeName,PipeDirection.InOut,1,PipeTransmissionMode.Byte,
-            PipeOptions.Asynchronous|PipeOptions.FirstPipeInstance,16384,16384,acl);
+            RuntimeCompatibility.ControlPipeOptions,16384,16384,acl);
         while(!token.IsCancellationRequested)
         {
             bool accepted=false;
@@ -178,7 +183,7 @@ internal sealed class ServiceRpc(MonitorEngine engine,string ownerSid,string pip
 public sealed class InstallReceipt
 {
     public string OwnerSid { get; set; } = "";
-    [System.Text.Json.Serialization.JsonRequired]
+    [JsonRequired]
     public string Version { get; set; } = AppVersion.Current;
     public DateTimeOffset InstalledAt { get; set; } = DateTimeOffset.UtcNow;
 }
@@ -225,13 +230,26 @@ internal static class ServiceInstaller
         var manager=new DnsSessionManager(AppPaths.ServiceData,protectFile:ProtectFileOwner);
         if(manager.HasJournal) await manager.RestoreForServiceUpdateAsync();
         var config=AtomicStore.Read<AppConfig>(Path.Combine(AppPaths.ServiceData,"config.json"))??AppConfig.Defaults();
+        var catalogMarker=Path.Combine(AppPaths.ServiceData,"bundled-channels.json");
+        config=AddUpgradeCatalog(config,AtomicStore.Read<string>(catalogMarker),previous is not null,out _,out int pendingCatalog);
         config.ManagementRequested=false; config.Validate(); AtomicStore.Write(Path.Combine(AppPaths.ServiceData,"config.json"),config,ProtectFileOwner);
+        if(pendingCatalog==0) AtomicStore.Write(catalogMarker,BundledChannels.Revision,ProtectFileOwner);
         ProtectFileOwner(Path.Combine(AppPaths.ServiceData,"config.json"));
         if(File.Exists(Path.Combine(AppPaths.ServiceData,"config.json.bak"))) ProtectFileOwner(Path.Combine(AppPaths.ServiceData,"config.json.bak"));
         if(!sameFiles) WritePackage(package);
         WriteReceipt(previous,sid);
         if(!installed) await ScAsync("create",AppPaths.ServiceName,"binPath=","\""+AppPaths.InstalledExe+"\" --service","start=","auto","DisplayName=","RtlineDnsPilot DNS");
         await ConfigureAndStartAsync();
+    }
+
+    internal static AppConfig AddUpgradeCatalog(AppConfig config,string? previousRevision,bool previouslyInstalled,out int added,out int pending)
+    {
+        // Services before this release had no catalog marker. Accept the new
+        // full catalog once, including channels lost to older replacing imports.
+        previousRevision ??= previouslyInstalled ? BundledChannels.PreviousRevision : null;
+        var expanded=BundledChannels.AddMissing(config,out added,previousRevision);
+        pending=BundledChannels.PendingCount(expanded,previousRevision);
+        return expanded;
     }
 
     internal static bool PackageNeedsUpdate(InstallReceipt? previous,string ownerSid,bool sameFiles,Version? installedBinaryVersion=null)
@@ -313,9 +331,9 @@ internal static class ServiceInstaller
             var options=json.RootElement.GetProperty("runtimeOptions");
             var frameworks=options.GetProperty("frameworks").EnumerateArray().ToArray();
             bool HasFramework(string name)=>frameworks.Any(f=>f.GetProperty("name").GetString()==name
-                && Version.TryParse(f.GetProperty("version").GetString(),out var version) && version.Major==10);
-            if(options.GetProperty("tfm").GetString()!="net10.0" || !HasFramework("Microsoft.NETCore.App") || !HasFramework("Microsoft.WindowsDesktop.App"))
-                throw new InvalidDataException("Некорректный RtlineDnsPilot.runtimeconfig.json: нужны .NET 10 и Windows Desktop.");
+                && Version.TryParse(f.GetProperty("version").GetString(),out var version) && version.Major==RuntimeCompatibility.RuntimeMajor);
+            if(options.GetProperty("tfm").GetString()!=RuntimeCompatibility.TargetFramework || !HasFramework("Microsoft.NETCore.App") || !HasFramework("Microsoft.WindowsDesktop.App"))
+                throw new InvalidDataException("Некорректный RtlineDnsPilot.runtimeconfig.json: нужны .NET "+RuntimeCompatibility.RuntimeMajor+" и Windows Desktop для этого варианта программы.");
         }
         catch(Exception ex) when(ex is JsonException or KeyNotFoundException or InvalidOperationException)
         { throw new InvalidDataException("Повреждён файл пакета RtlineDnsPilot.runtimeconfig.json.",ex); }

@@ -34,7 +34,7 @@ public sealed class DnsRelay : IAsyncDisposable
         token.ThrowIfCancellationRequested();
         lock (_sync)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
             if (_lifetime != null) throw new InvalidOperationException("Этот экземпляр DNS relay уже запускался.");
             var created = new List<(Socket Socket, bool Tcp)>();
             try

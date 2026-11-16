@@ -15,7 +15,7 @@ public static class DnsWire
 
     public static byte[] Query(string host, ushort type = 1)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(host);
+        if (string.IsNullOrWhiteSpace(host)) throw new ArgumentException("Укажите имя DNS.", nameof(host));
         if (type == 0) throw new ArgumentException("Недопустимый тип DNS запроса.", nameof(type));
         var labels = host == "." ? [] : host.TrimEnd('.').Split('.');
         if (host.EndsWith("..", StringComparison.Ordinal)) throw new ArgumentException("Пустая метка DNS.", nameof(host));

@@ -2,6 +2,9 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Serialization;
+#if LEGACY_WINDOWS
+using JsonRequiredAttribute = NetPilot.LegacyJsonRequiredAttribute;
+#endif
 
 namespace NetPilot;
 
@@ -225,7 +228,7 @@ public sealed class ChartHistoryArchive
         foreach (var series in Series) series.Minutes.RemoveAll(m => m.From < cutoff);
         Series.RemoveAll(s => s.Minutes.Count == 0);
     }
-    private static bool ValidKey(string? value) => value is { Length: 64 } && value.All(c => char.IsAsciiHexDigit(c));
+    private static bool ValidKey(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
     private static bool ValidDuration(double value) => double.IsFinite(value) && value >= 0;
     private static double NormalizeDuration(double value) => ValidDuration(value) ? value : 0;
     internal static double SumDuration(double a, double b) => double.IsPositiveInfinity(a + b) ? double.MaxValue : a + b;

@@ -80,10 +80,7 @@ public sealed class DnsShareClient : IDisposable
         _ownerEndpoint = ownerEndpointForTests ?? DnsShareDestination.Endpoint;
         _http = new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
     }
-    private static HttpClientHandler CreateHandler() => new()
-    {
-        AllowAutoRedirect = false, UseCookies = false, UseDefaultCredentials = false, Credentials = null
-    };
+    private static HttpClientHandler CreateHandler() => RuntimeCompatibility.CreateHttpsHandler();
 
     public static DnsShareSettings ValidateSettings(string endpoint, string inviteCode)
     {

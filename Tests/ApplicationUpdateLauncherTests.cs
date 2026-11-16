@@ -190,7 +190,7 @@ public static class ApplicationUpdateLauncherTests
             var hashes = Runtime.ToDictionary(name => name, name => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, name)))), StringComparer.OrdinalIgnoreCase);
             return new StagedApplicationUpdate(new ApplicationRelease(version, "v" + version,
                 "https://github.com/rtline032-gif/RtlineDnsPilot/releases/tag/v" + version,
-                "https://github.com/rtline032-gif/RtlineDnsPilot/releases/download/v" + version + "/RtlineDnsPilot-" + version + "-win-x64.zip", 1024, new string('a', 64), true), directory, hashes);
+                "https://github.com/rtline032-gif/RtlineDnsPilot/releases/download/v" + version + "/" + RuntimeCompatibility.ArchiveName(version), 1024, new string('a', 64), true), directory, hashes);
         }
         public Task<string> Prepare(bool updateService = true) => Launcher.PrepareAsync(Update, Old, Data, updateService);
         public void BeginWorker(string request) { Launcher.StartCompletionWorker(request); Host.ApplicationDirectory = Path.GetDirectoryName(Host.Starts.Last().Executable)!; }

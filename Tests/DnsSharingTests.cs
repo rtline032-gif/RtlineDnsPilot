@@ -16,14 +16,14 @@ public static class DnsSharingTests
         ProbeResult Sample(AppConfig c,bool success=true,string? key=null) => new() {ProfileId=c.Profiles[0].Id,At=now,Success=success,
             MonitoringKey=key??MonitoringTargets.Key(c),Services=[new ServiceProbeResult {ServiceId=MonitoringTargets.ChatGpt,At=now,Success=success}]};
         DnsShareCandidate Candidate(string ip="8.8.8.8") => new() {Mode=DnsMode.Udp,Servers=[ip],WorkedServices=["chatgpt"]};
-        Check("sharing excludes all 15 built-in effective configurations",()=>
+        Check("sharing excludes all 26 built-in effective configurations",()=>
         {
             var bases=AppConfig.Defaults().Profiles.Concat(BundledChannels.Additions()).ToArray();
-            Require(bases.Length==15,"Bundled baseline changed without receiver update.");
+            Require(bases.Length==26,"The complete catalog is not excluded from sharing.");
             foreach(var p in bases)
             {
                 var c=Config(); c.Profiles=[JsonData.Clone(p)];c.Profiles[0].Id=Guid.NewGuid().ToString("N");c.Profiles[0].Name="Renamed";
-                c.Profiles[0].Servers=c.Profiles[0].Servers.Reverse().ToArray();
+                c.Profiles[0].Servers=c.Profiles[0].Servers.AsEnumerable().Reverse().ToArray();
                 Require(DnsSharing.Select(c,[Stats(c,Sample(c))],now).Profiles.Count==0,"Built-in escaped by ID/name/address order: "+p.Name);
             }
         });
@@ -93,7 +93,7 @@ public static class DnsSharingTests
             var p=Candidate("2001:4860:4860::8888");p.Servers=["2001:4860:4860::8888","8.8.8.8"];
             var key=DnsSharing.Key(p);var canonical=DnsSharing.NormalizeCandidate(p);
             Require(canonical.Servers.Contains("2001:4860:4860:0000:0000:0000:0000:8888"),"IPv6 wire form is not strict eight-hextet.");
-            p.Servers=p.Servers.Reverse().ToArray();p.WorkedServices=["gemini"];
+            p.Servers=p.Servers.AsEnumerable().Reverse().ToArray();p.WorkedServices=["gemini"];
             Require(DnsSharing.Key(p)==key,"Settings key depends on evidence/address order.");
             p.DnsPort=5353;Require(DnsSharing.Key(p)!=key,"UDP port missing from dedupe identity.");
         });

@@ -35,13 +35,13 @@ public sealed class ProfileProbe
                 {
                     var query = DnsWire.Query(uri.IdnHost, type);
                     var response = await _transport.ExchangeAsync(profile, query, dnsDeadline.Token).ConfigureAwait(false);
-                    if (DnsWire.ResponseCode(response) != 0) return ([], "DNS RCODE " + DnsWire.ResponseCode(response));
+                    if (DnsWire.ResponseCode(response) != 0) return ([], (type == 1 ? "A" : "AAAA") + ": DNS RCODE " + DnsWire.ResponseCode(response));
                     var family = type == 1 ? AddressFamily.InterNetwork : AddressFamily.InterNetworkV6;
                     return (DnsWire.Addresses(response).Where(ip => ip.AddressFamily == family).ToArray(), null);
                 }
                 catch (Exception ex) when (ex is IOException or SocketException or HttpRequestException or InvalidDataException or ArgumentException or OperationCanceledException)
                 {
-                    return ([], ex is OperationCanceledException ? "Истёк бюджет DNS запроса" : ex.GetBaseException().Message);
+                    return ([], (type == 1 ? "A" : "AAAA") + ": " + DnsTransport.DescribeFailure(ex));
                 }
             }
             var answers = await Task.WhenAll(Resolve(1), Resolve(28)).ConfigureAwait(false);
@@ -57,7 +57,7 @@ public sealed class ProfileProbe
             using var client = DnsTransport.CreatePinnedClient(uri, addresses);
             using var request = new HttpRequestMessage(HttpMethod.Get, uri)
             {
-                Version = HttpVersion.Version20, VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+                Version = RuntimeCompatibility.PreferredHttpVersion, VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
             };
             request.Headers.UserAgent.ParseAdd("NetPilot/0.1");
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
@@ -92,7 +92,7 @@ public sealed class ProfileProbe
             if (result.Stage == "dns") result.DnsMs = timer.Elapsed.TotalMilliseconds;
             else result.HttpsMs = timer.Elapsed.TotalMilliseconds;
             if (ex is OperationCanceledException) { result.Stage = "timeout"; result.Detail = "Истёк общий срок проверки публичного HTTPS."; }
-            else result.Detail = (result.Stage == "dns" ? "Ошибка DNS: " : "Ошибка HTTPS/TLS: ") + ex.GetBaseException().Message;
+            else result.Detail = (result.Stage == "dns" ? "Ошибка DNS: " : "Ошибка HTTPS/TLS: ") + DnsTransport.DescribeFailure(ex);
             return result;
         }
     }

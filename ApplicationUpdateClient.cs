@@ -27,8 +27,7 @@ internal sealed class ApplicationUpdateClient : IDisposable
         "profiles.json", "README.txt", "CHANNELS.txt", "LICENSE", "PRIVACY.md", "CODE_SIGNING.md", "SHA256SUMS.txt"
     };
 
-    public ApplicationUpdateClient() : this(new HttpClientHandler
-    { AllowAutoRedirect = false, UseCookies = false, UseDefaultCredentials = false }) { }
+    public ApplicationUpdateClient() : this(RuntimeCompatibility.CreateHttpsHandler()) { }
 
     internal ApplicationUpdateClient(HttpMessageHandler handler, Action<string, string>? validatePackage = null)
     {
@@ -124,8 +123,8 @@ internal sealed class ApplicationUpdateClient : IDisposable
             var release = candidate.Release;
             if (!release.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array || assets.GetArrayLength() > 100)
                 throw new InvalidDataException("Не удалось проверить файлы выпуска " + candidate.Text + ".");
-            string plainName = "RtlineDnsPilot-" + candidate.Text + "-win-x64.zip";
-            string publicName = "RtlineDnsPilot-" + candidate.Text + "-public-win-x64.zip";
+            string plainName = RuntimeCompatibility.ArchiveName(candidate.Text);
+            string publicName = RuntimeCompatibility.ArchiveName(candidate.Text, publicName: true);
             var matching = assets.EnumerateArray().Where(a => a.ValueKind == JsonValueKind.Object && a.TryGetProperty("name", out var name)
                 && name.ValueKind == JsonValueKind.String && (name.GetString() == plainName || name.GetString() == publicName)).ToArray();
             if (matching.Length == 0) continue;
@@ -174,7 +173,7 @@ internal sealed class ApplicationUpdateClient : IDisposable
                 progress?.Report(new("Загрузка RtlineDnsPilot " + release.Version, length, release.Size));
             }
             await target.FlushAsync(token);
-            if (length != release.Size || !Convert.ToHexStringLower(digest.GetHashAndReset()).Equals(release.Sha256, StringComparison.OrdinalIgnoreCase))
+            if (length != release.Size || !Convert.ToHexString(digest.GetHashAndReset()).Equals(release.Sha256, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Контрольная сумма или размер скачанного архива не совпали с GitHub. Обновление не применено.");
             return;
         }
@@ -227,7 +226,7 @@ internal sealed class ApplicationUpdateClient : IDisposable
                 }
                 if (fileWritten != pair.Value.Length) throw new InvalidDataException("Архив содержит неполный файл.");
             }
-            hashes.Add(pair.Key, Convert.ToHexStringLower(hash.GetHashAndReset()));
+            hashes.Add(pair.Key, Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant());
         }
         ValidateManifest(File.ReadAllText(Path.Combine(directory, "SHA256SUMS.txt")), hashes);
         return hashes;
@@ -277,15 +276,15 @@ internal sealed class ApplicationUpdateClient : IDisposable
         if (!Uri.TryCreate(release.PageUrl, UriKind.Absolute, out var page) || !SafeHttps(page)
             || page.AbsoluteUri != Repository + "/releases/tag/" + release.Tag)
             throw new InvalidDataException("Выпуск не принадлежит официальному репозиторию RtlineDnsPilot.");
-        string prefix = Repository + "/releases/download/" + release.Tag + "/RtlineDnsPilot-" + release.Version;
         if (!Uri.TryCreate(release.DownloadUrl, UriKind.Absolute, out var download) || !SafeHttps(download)
-            || (download.AbsoluteUri != prefix + "-win-x64.zip" && download.AbsoluteUri != prefix + "-public-win-x64.zip"))
+            || (download.AbsoluteUri != Repository + "/releases/download/" + release.Tag + "/" + RuntimeCompatibility.ArchiveName(release.Version)
+                && download.AbsoluteUri != Repository + "/releases/download/" + release.Tag + "/" + RuntimeCompatibility.ArchiveName(release.Version, publicName: true)))
             throw new InvalidDataException("Архив обновления не принадлежит официальному выпуску Windows x64.");
     }
     private static bool IsDownloadRedirect(Uri uri, string original) => SafeHttps(uri) && uri.AbsoluteUri.Length <= 16384
         && (uri.AbsoluteUri == original || uri.Host is "release-assets.githubusercontent.com" or "objects.githubusercontent.com" or "github-releases.githubusercontent.com");
     private static bool SafeHttps(Uri uri) => uri.IsAbsoluteUri && uri.Scheme == Uri.UriSchemeHttps && uri.Port == 443 && uri.UserInfo.Length == 0 && uri.Fragment.Length == 0;
-    private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(char.IsAsciiHexDigit);
+    private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
     private static bool IsRedirect(HttpStatusCode code) => code is HttpStatusCode.MovedPermanently or HttpStatusCode.Found or HttpStatusCode.SeeOther or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect;
     private static void EnsureSuccess(HttpResponseMessage response, string what)
     {
@@ -299,7 +298,7 @@ internal sealed class ApplicationUpdateClient : IDisposable
     {
         text = tag.StartsWith('v') ? tag[1..] : tag;
         var parts = text.Split('.'); version = null;
-        return parts.Length is 3 or 4 && parts.All(p => p.Length > 0 && p.All(char.IsAsciiDigit) && (p.Length == 1 || p[0] != '0')) && Version.TryParse(text, out version);
+        return parts.Length is 3 or 4 && parts.All(p => p.Length > 0 && p.All(RuntimeCompatibility.IsAsciiDigit) && (p.Length == 1 || p[0] != '0')) && Version.TryParse(text, out version);
     }
     private static Version Normalize(Version value) => new(value.Major, value.Minor, Math.Max(0, value.Build), Math.Max(0, value.Revision));
     private static bool IsLink(ZipArchiveEntry entry)

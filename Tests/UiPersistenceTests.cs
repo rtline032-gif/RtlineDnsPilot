@@ -16,6 +16,45 @@ public static class UiPersistenceTests
         static ChannelProfile Custom() => new() { Name = "Comss.one DNS", Enabled = false, Mode = DnsMode.Doh,
             Servers = ["83.220.169.155", "212.109.195.93"], DohUrl = "https://dns.comss.one/dns-query" };
 
+        await Check("imported additions preserve existing service channel history and survive reopening", async dir =>
+        {
+            var config = Defaults();
+            AtomicStore.Write(Path.Combine(dir, "ui-config.json"), config);
+            var id = config.Profiles[0].Id;
+            var service = new FakeService { State = new AppStatus { Config = config, ServiceVersion = AppVersion.Current,
+                Statistics = [new ProfileStats { ProfileId = id, Samples = [new ProbeResult { ProfileId = id, Success = true }] }] } };
+            await using (var backend = new UiBackend(dir, service))
+            {
+                await backend.RefreshAsync();
+                var imported = ProfileImport.Merge(backend.Status.Config, [Custom()]);
+                await backend.ConfigureAsync(imported.Config);
+                Require(backend.Status.Config.Profiles.Count == 4 && backend.Status.Statistics.Single().ProfileId == id,
+                    "Import discarded existing service channels or their history association.");
+            }
+            await using var reopened = new UiBackend(dir, service);
+            await reopened.RefreshAsync();
+            var repeated = ProfileImport.Merge(reopened.Status.Config, [Custom()]);
+            Require(repeated.Added == 0 && repeated.Duplicates == 1 && service.ConfigurationCalls == 1,
+                "A saved import disappeared or became a duplicate after reopening.");
+        });
+        await Check("an import with a lost service reply preserves both old channels and added draft after restart", async dir =>
+        {
+            var config = Defaults();
+            AtomicStore.Write(Path.Combine(dir, "ui-config.json"), config);
+            var service = new FakeService { State = new AppStatus { Config = config, ServiceVersion = AppVersion.Current }, FailConfigure = true };
+            await using (var backend = new UiBackend(dir, service))
+            {
+                await backend.RefreshAsync();
+                try { await backend.ConfigureAsync(ProfileImport.Merge(backend.Status.Config, [Custom()]).Config); }
+                catch (IOException) { }
+            }
+            await using var reopened = new UiBackend(dir, service);
+            await reopened.RefreshAsync();
+            Require(reopened.Status.Config.Profiles.Count == 4 && reopened.PendingServiceConfiguration
+                && service.State.Config.Profiles.Count == 3 && service.ConfigurationCalls == 1,
+                "An interrupted import replaced the existing list or was replayed without confirmation.");
+        });
+
         await Check("service attachment preserves a legacy local fourth channel", async dir =>
         {
             var local = Defaults(); local.Profiles.Add(Custom());

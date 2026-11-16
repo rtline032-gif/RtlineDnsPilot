@@ -3,6 +3,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+#if LEGACY_WINDOWS
+using JsonRequiredAttribute = NetPilot.LegacyJsonRequiredAttribute;
+#endif
 
 namespace NetPilot;
 
@@ -33,7 +36,7 @@ internal sealed class ApplicationUpdateLauncher
     private readonly IApplicationUpdateHost _host;
     private readonly Action<string, string> _validatePackage;
     private string PointerPath => Path.Combine(_root, "current.json");
-    public static string DefaultRoot => Path.Combine(AppPaths.LocalData, "application-updates");
+    public static string DefaultRoot => Path.Combine(AppPaths.LocalData, RuntimeCompatibility.UpdateDirectory);
     internal ApplicationUpdateLauncher(string? root = null, IApplicationUpdateHost? host = null,
         Action<string, string>? validatePackage = null)
     {
@@ -221,8 +224,8 @@ internal sealed class ApplicationUpdateLauncher
         if ((release.Tag != "v" + release.Version && release.Tag != release.Version) || release.Size < 1 || release.Size > 32L * 1024 * 1024 || string.IsNullOrEmpty(release.Sha256) || release.Sha256.Length != 64 || !release.Sha256.All(Uri.IsHexDigit))
             throw new InvalidDataException("Некорректные сведения о выпуске.");
         const string repo = "https://github.com/rtline032-gif/RtlineDnsPilot/releases/";
-        if (release.PageUrl != repo + "tag/" + release.Tag || (release.DownloadUrl != repo + "download/" + release.Tag + "/RtlineDnsPilot-" + release.Version + "-win-x64.zip"
-            && release.DownloadUrl != repo + "download/" + release.Tag + "/RtlineDnsPilot-" + release.Version + "-public-win-x64.zip"))
+        if (release.PageUrl != repo + "tag/" + release.Tag || (release.DownloadUrl != repo + "download/" + release.Tag + "/" + RuntimeCompatibility.ArchiveName(release.Version)
+            && release.DownloadUrl != repo + "download/" + release.Tag + "/" + RuntimeCompatibility.ArchiveName(release.Version, publicName: true)))
             throw new InvalidDataException("Обновление принадлежит другому источнику.");
         string directory = AbsoluteDirectory(update.DirectoryPath); EnsureInside(directory);
         string envelope = Path.GetDirectoryName(directory)!;
@@ -316,7 +319,7 @@ internal sealed class ApplicationUpdateLauncher
     private static bool SameDirectory(string a, string b) => string.Equals(AbsoluteDirectory(a), AbsoluteDirectory(b), StringComparison.OrdinalIgnoreCase);
     private static Version ParseVersion(string value)
     {
-        if (string.IsNullOrWhiteSpace(value) || value.Length > 32 || value.Any(c => !char.IsAsciiDigit(c) && c != '.') || !Version.TryParse(value, out var parsed))
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 32 || value.Any(c => !RuntimeCompatibility.IsAsciiDigit(c) && c != '.') || !Version.TryParse(value, out var parsed))
             throw new InvalidDataException("Некорректная версия программы.");
         return new(parsed.Major, parsed.Minor, Math.Max(0, parsed.Build), Math.Max(0, parsed.Revision));
     }

@@ -6,6 +6,9 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text.Json.Serialization;
+#if LEGACY_WINDOWS
+using JsonRequiredAttribute = NetPilot.LegacyJsonRequiredAttribute;
+#endif
 using Microsoft.Win32;
 
 namespace NetPilot;
@@ -329,7 +332,7 @@ public sealed class DnsSessionManager
     { if (family == DnsFamily.IPv4) journal.IPv4Touched = value; else journal.IPv6Touched = value; }
     private static void ValidateJournal(DnsJournal journal)
     {
-        if (journal.Version is not (1 or 2) || !Enum.IsDefined(journal.Operation) || !Guid.TryParse(journal.SessionId, out _) || journal.CreatedUtc == default || journal.Original == null)
+        if (journal.Version is not (1 or 2) || !Enum.IsDefined(typeof(DnsOperation), journal.Operation) || !Guid.TryParse(journal.SessionId, out _) || journal.CreatedUtc == default || journal.Original == null)
             throw new InvalidDataException("Не хватает обязательных полей журнала.");
         DnsState.Validate(journal.Original);
         if ((journal.PendingWriterPid is null) != (journal.PendingWriterStartUtcTicks is null)
@@ -397,7 +400,7 @@ internal static class DnsState
     }
     public static void Validate(DnsFamilySnapshot family)
     {
-        if (family == null || !Enum.IsDefined(family.Family) || !Enum.IsDefined(family.Source) || family.Servers == null || family.EffectiveServers == null
+        if (family == null || !Enum.IsDefined(typeof(DnsFamily), family.Family) || !Enum.IsDefined(typeof(DnsSource), family.Source) || family.Servers == null || family.EffectiveServers == null
             || family.Servers.Length > 64 || family.EffectiveServers.Length > 64 || (family.Source == DnsSource.Dhcp && family.Servers.Length != 0)
             || (family.Source == DnsSource.Static && family.Servers.Length == 0)) throw new InvalidDataException("Некорректный источник или список DNS.");
         var expected = family.Family == DnsFamily.IPv4 ? AddressFamily.InterNetwork : AddressFamily.InterNetworkV6;
@@ -488,6 +491,13 @@ public sealed class WinDnsBackend : IDnsRecoveryBackend
         var current = await ReadAsync(adapterId);
         if (!DnsState.SameConfiguration(DnsState.Family(current, desired.Family), expected))
             throw new InvalidOperationException("Конфликт перед резервным восстановлением: сторонняя настройка DNS сохранена.");
+        if (RuntimeCompatibility.IsWindows7)
+        {
+            // Windows 7 has no NetAdapter/DnsClient CIM providers. Retry the
+            // bounded native writer with fresh GUID/ownership checks per step.
+            await ApplyAsync(adapterId, expected, desired);
+            return;
+        }
         var nic = WindowsAdapters.Resolve(adapterId);
         int index = WindowsAdapters.Index(nic, desired.Family);
         string moduleRoot = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "Modules");

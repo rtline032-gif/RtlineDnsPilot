@@ -1,7 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework Condition="'$(LegacyWindows)' != 'true'">net10.0-windows</TargetFramework>
+    <TargetFramework Condition="'$(LegacyWindows)' == 'true'">net6.0-windows</TargetFramework>
+    <LangVersion>latest</LangVersion>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -10,7 +12,12 @@
     <RootNamespace>NetPilot</RootNamespace>
     <Title>RtlineDnsPilot</Title>
     <Product>RtlineDnsPilot</Product>
-    <Version>0.1.12</Version><DebugType>None</DebugType><DebugSymbols>false</DebugSymbols>
+    <Version>0.1.15</Version>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(LegacyWindows)' == 'true'">
+    <DefineConstants>$(DefineConstants);LEGACY_WINDOWS</DefineConstants>
+    <RuntimeFrameworkVersion>6.0.36</RuntimeFrameworkVersion>
+    <RollForward>LatestPatch</RollForward>
   </PropertyGroup>
   <ItemGroup><Compile Remove="Tests/**/*.cs" /></ItemGroup>
 </Project>

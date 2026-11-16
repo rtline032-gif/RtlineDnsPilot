@@ -17,12 +17,13 @@ public sealed class DnsTransport : IDisposable
     {
         ArgumentNullException.ThrowIfNull(profile);
         DnsWire.ValidateQuery(query);
-        lock (_sync) ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!Enum.IsDefined(profile.Mode) || profile.DnsPort is < 1 or > 65535 || profile.Servers is null || profile.Servers.Length is < 1 or > 8)
+        lock (_sync) { if (_disposed) throw new ObjectDisposedException(GetType().FullName); }
+        if (!Enum.IsDefined(typeof(DnsMode), profile.Mode) || profile.DnsPort is < 1 or > 65535 || profile.Servers is null || profile.Servers.Length is < 1 or > 8)
             throw new ArgumentException("Некорректный DNS профиль.", nameof(profile));
         var addresses = profile.Servers.Select(value => IPAddress.TryParse(value, out var ip) ? ip : throw new ArgumentException("Требуется явный IP DNS сервера.")).ToArray();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(8));
+        var upstream = profile.Mode == DnsMode.Doh ? "DoH" : "UDP/TCP DNS";
         try
         {
             Uri? dohUri = null;
@@ -33,8 +34,10 @@ public sealed class DnsTransport : IDisposable
                     throw new ArgumentException("Для DoH нужен HTTPS URL с именем сервера.");
             }
             Exception? last = null; byte[]? dnsFailure = null;
-            foreach (var address in addresses)
+            for (var index = 0; index < addresses.Length; index++)
             {
+                var address = addresses[index];
+                upstream = (dohUri != null ? "DoH" : "UDP/TCP DNS") + ", сервер " + (index + 1) + "/" + addresses.Length;
                 deadline.Token.ThrowIfCancellationRequested();
                 using var attempt = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
                 var addressBudgetMs = dohUri != null && addresses.Length == 1 ? 8000 : Math.Clamp(8000 / addresses.Length, 750, 3000);
@@ -50,15 +53,39 @@ public sealed class DnsTransport : IDisposable
                     return response; // Includes valid negative answers such as NXDOMAIN.
                 }
                 catch (Exception ex) when (ex is SocketException or IOException or InvalidDataException or HttpRequestException or AuthenticationException
-                    || (ex is OperationCanceledException && !deadline.IsCancellationRequested)) { last = ex; }
+                    || (ex is OperationCanceledException && !deadline.IsCancellationRequested))
+                { last = new IOException(upstream + ": " + DescribeFailure(ex), ex); }
             }
             if (dnsFailure != null) return dnsFailure;
-            throw new IOException("Все явные DNS серверы профиля недоступны или вернули некорректный ответ.", last);
+            throw new IOException("DNS-профиль не ответил корректно. " + last?.Message, last);
         }
-        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex)
         {
-            throw new IOException("Истёк срок ожидания ответа DNS (не более 8 с).", ex);
+            if (cancellationToken.IsCancellationRequested)
+                throw new OperationCanceledException(upstream + ": запрос DNS прерван — тайм-аут или отмена.", ex, cancellationToken);
+            throw new IOException(upstream + ": истёк срок ожидания ответа DNS (не более 8 с).", ex);
         }
+    }
+
+    // Keep the transport layer and socket/TLS reason together. GetBaseException()
+    // alone discards these phases and often leaves only "operation was canceled".
+    // Never include query packets, DNS names, stack traces or local file paths.
+    internal static string DescribeFailure(Exception error)
+    {
+        var messages = new List<string>();
+        for (Exception? item = error; item is not null && messages.Count < 4; item = item.InnerException)
+        {
+            var text = item switch
+            {
+                SocketException socket => "TCP/UDP " + socket.SocketErrorCode + " (" + socket.NativeErrorCode + "): " + socket.Message,
+                AuthenticationException => "TLS/сертификат: " + item.Message,
+                OperationCanceledException => "Тайм-аут/отмена: " + item.Message,
+                _ => item.Message
+            };
+            if (!string.IsNullOrWhiteSpace(text) && !messages.Contains(text, StringComparer.Ordinal)) messages.Add(text);
+        }
+        var detail = string.Join(" → ", messages);
+        return detail[..Math.Min(detail.Length, 900)];
     }
 
     private static async Task<byte[]> ExchangeUdpAsync(IPEndPoint endpoint, byte[] query, CancellationToken token)
@@ -98,7 +125,7 @@ public sealed class DnsTransport : IDisposable
         HttpClient client; var owned = false;
         lock (_sync)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
             if (!_dohClients.TryGetValue(key, out client!))
             {
                 client = CreatePinnedClient(uri, [address]);
@@ -110,7 +137,7 @@ public sealed class DnsTransport : IDisposable
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, uri)
             {
-                Version = HttpVersion.Version20,
+                Version = RuntimeCompatibility.PreferredHttpVersion,
                 VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
                 Content = new ByteArrayContent(query)
             };
@@ -146,7 +173,7 @@ public sealed class DnsTransport : IDisposable
             AutomaticDecompression = DecompressionMethods.None,
             ConnectTimeout = TimeSpan.FromSeconds(5), MaxConnectionsPerServer = 16,
             PooledConnectionLifetime = TimeSpan.FromMinutes(5), PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
-            MaxResponseHeadersLength = 16, MaxResponseDrainSize = 0,
+            MaxResponseHeadersLength = 64, MaxResponseDrainSize = 0,
             ConnectCallback = async (context, token) =>
             {
                 if (!string.Equals(context.DnsEndPoint.Host, uri.IdnHost, StringComparison.OrdinalIgnoreCase) || context.DnsEndPoint.Port != uri.Port)
@@ -165,13 +192,15 @@ public sealed class DnsTransport : IDisposable
                     }
                     catch (Exception ex) when (ex is SocketException or OperationCanceledException)
                     {
-                        socket.Dispose(); if (token.IsCancellationRequested) throw; last = ex;
+                        socket.Dispose(); if (token.IsCancellationRequested) throw;
+                        last = new IOException("TCP-подключение: " + DescribeFailure(ex), ex);
                     }
                 }
-                throw new IOException("Ни один закреплённый IP не доступен для HTTPS.", last);
+                throw new IOException("Не удалось TCP-подключение к закреплённым адресам HTTPS. " + last?.Message, last);
             }
             // Standard SslOptions defaults preserve hostname/SNI and certificate-chain validation.
         };
+        RuntimeCompatibility.ConfigurePinnedHttpsHandler(handler, RuntimeCompatibility.IsWindows7);
         return new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
     }
 

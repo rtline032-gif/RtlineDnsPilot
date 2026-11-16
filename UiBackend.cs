@@ -1,4 +1,9 @@
 using System.Text.Json;
+#if LEGACY_WINDOWS
+using JsonRequiredAttribute = NetPilot.LegacyJsonRequiredAttribute;
+#else
+using JsonRequiredAttribute = System.Text.Json.Serialization.JsonRequiredAttribute;
+#endif
 
 namespace NetPilot;
 
@@ -20,7 +25,7 @@ internal sealed class WindowsUiServiceConnection : IUiServiceConnection
 
 internal sealed class PendingUiConfiguration
 {
-    [System.Text.Json.Serialization.JsonRequired]
+    [JsonRequired]
     public AppConfig Config { get; set; } = null!;
     public bool MergeServiceProfiles { get; set; }
 }
@@ -109,11 +114,14 @@ public sealed class UiBackend : IAsyncDisposable
             try
             {
                 var marker = Path.Combine(dataDirectory, "bundled-channels.json");
-                if (AtomicStore.Read<string>(marker) != BundledChannels.Revision)
+                var previousRevision = AtomicStore.Read<string>(marker);
+                if (previousRevision != BundledChannels.Revision)
                 {
-                    var expanded = BundledChannels.AddMissing(_config, out int added);
+                    var expanded = BundledChannels.AddMissing(_config, out int added, previousRevision);
                     if (added > 0) StageConfiguration(expanded, mergeServiceProfiles: !_pendingConfiguration || _mergeServiceProfiles);
-                    AtomicStore.Write(marker, BundledChannels.Revision);
+                    var pending = BundledChannels.PendingCount(expanded, previousRevision);
+                    if (pending == 0) AtomicStore.Write(marker, BundledChannels.Revision);
+                    else _loadWarning = $"В каталоге обновления осталось {pending} каналов: достигнут предел 32. Существующие каналы сохранены; освободите место и перезапустите программу для добавления остальных.";
                 }
             }
             catch (Exception ex)
@@ -138,7 +146,7 @@ public sealed class UiBackend : IAsyncDisposable
         try
         {
             await _gate.WaitAsync(timeout.Token);entered=true;
-            ObjectDisposedException.ThrowIf(_disposed,this);
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
             if(_connected)
             {
                 if(!Version.TryParse(Status.ServiceVersion,out var version)||version<new Version(0,1,5))
@@ -182,7 +190,7 @@ public sealed class UiBackend : IAsyncDisposable
         try
         {
             await _gate.WaitAsync(timeout.Token);entered=true;
-            ObjectDisposedException.ThrowIf(_disposed,this);
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
             if(_connected)
             {
                 if(!Version.TryParse(Status.ServiceVersion,out var version)||version<new Version(0,1,5))
@@ -211,7 +219,7 @@ public sealed class UiBackend : IAsyncDisposable
         await _gate.WaitAsync();
         try
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
             RpcReply? reply = null;
             var installed = _service.IsInstalled;
             bool attempted=false;
@@ -337,7 +345,7 @@ public sealed class UiBackend : IAsyncDisposable
 
     public Task SelectAutomaticAsync(AutoSelectionMode mode)
     {
-        if(!Enum.IsDefined(mode)) throw new ArgumentException("Выберите режим автовыбора: самый стабильный или самый быстрый.",nameof(mode));
+        if(!Enum.IsDefined(typeof(AutoSelectionMode), mode)) throw new ArgumentException("Выберите режим автовыбора: самый стабильный или самый быстрый.",nameof(mode));
         if(DnsStateUnknown) throw new InvalidOperationException("Нет подтверждённой связи со службой. Сначала нажмите «Проверить связь» или «Исправить службу», затем меняйте режим автовыбора.");
         var config=JsonData.Clone(Status.Config);
         config.AutoSelection=mode;config.PinnedProfileId=null;config.ManualProfileId=null;config.ManualUntil=null;
@@ -560,9 +568,7 @@ public sealed class UiBackend : IAsyncDisposable
         var profiles = document.RootElement.ValueKind == JsonValueKind.Array
             ? JsonData.Decode<List<ChannelProfile>>(json)
             : JsonData.Decode<AppConfig>(json).Profiles;
-        var check = AppConfig.Defaults();
-        check.Profiles = profiles;
-        check.Validate();
+        ProfileImport.ValidateInput(profiles);
         return profiles;
     }
 

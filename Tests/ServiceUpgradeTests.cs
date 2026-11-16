@@ -20,6 +20,8 @@ public static class ServiceUpgradeTests
             throw new Exception("Unsafe installation decision was accepted.");
         }
         const string owner = "S-1-5-21-100-200-300-1001";
+        var currentVersion = Version.Parse(AppVersion.Current);
+        var newerVersion = new Version(currentVersion.Major, currentVersion.Minor, currentVersion.Build + 1, 0);
         static InstallReceipt Receipt(string version) => new() { OwnerSid = owner, Version = version };
         static void WithPackageFiles(Action<string, Dictionary<string, byte[]>> test)
         {
@@ -37,11 +39,32 @@ public static class ServiceUpgradeTests
             }
             finally { Directory.Delete(directory, true); }
         }
-        const string runtimeJson = """{"runtimeOptions":{"tfm":"net10.0","frameworks":[{"name":"Microsoft.NETCore.App","version":"10.0.0"},{"name":"Microsoft.WindowsDesktop.App","version":"10.0.0"}]}}""";
+        string runtimeJson = """{"runtimeOptions":{"tfm":"net10.0","frameworks":[{"name":"Microsoft.NETCore.App","version":"10.0.0"},{"name":"Microsoft.WindowsDesktop.App","version":"10.0.0"}]}}""".Replace("10.0", RuntimeCompatibility.RuntimeMajor + ".0");
         string depsJson = """{"runtimeTarget":{"name":".NETCoreApp,Version=v10.0"},"targets":{".NETCoreApp,Version=v10.0":{"RtlineDnsPilot/0.1.8":{"runtime":{"RtlineDnsPilot.dll":{}}}}},"libraries":{"RtlineDnsPilot/0.1.8":{}}}""".Replace("0.1.8", AppVersion.Current);
 
         Check("new service installation receipt records corrected RPC version", () =>
             Require(new InstallReceipt().Version == AppVersion.Current, "New installations still identify themselves as the old service build."));
+        Check("service update appends catalog profiles while retaining service-only channels and IDs", () =>
+        {
+            var config=new AppConfig {Profiles=BundledChannels.All().Take(15).ToList()};
+            var custom=JsonData.Clone(BundledChannels.All()[15]);custom.Name="Service custom channel";custom.Servers=["8.8.4.4"];custom.Note="Keep service data";
+            config.Profiles.Add(custom);config.PinnedProfileId=custom.Id;
+            var before=JsonData.Encode(config.Profiles);
+            var expanded=ServiceInstaller.AddUpgradeCatalog(config,null,true,out var added,out var pending);
+            Require(added==11 && pending==0 && expanded.Profiles.Count==27 && JsonData.Encode(expanded.Profiles.Take(16).ToList())==before
+                && expanded.PinnedProfileId==custom.Id,"Service catalog update replaced an existing or colliding channel.");
+            Require(expanded.Profiles.Any(p=>p.Id!=custom.Id&&AppConfig.SameEffectiveConfiguration(p,BundledChannels.All()[15])),"A new catalog configuration was lost behind a service-only ID collision.");
+        });
+        Check("service upgrade fills missing old catalog channels once and then preserves later deletions", () =>
+        {
+            var config=new AppConfig {Profiles=BundledChannels.All().Take(14).ToList()};
+            var deleted=BundledChannels.All()[14].Id;
+            var expanded=ServiceInstaller.AddUpgradeCatalog(config,null,true,out var added,out _);
+            Require(added==12 && expanded.Profiles.Count==26 && expanded.Profiles.Any(p=>p.Id==deleted),"A new service catalog did not restore a missing old configuration.");
+            expanded.Profiles.RemoveAll(p=>p.Id==deleted);
+            var repeated=ServiceInstaller.AddUpgradeCatalog(expanded,BundledChannels.Revision,true,out added,out var pending);
+            Require(added==0&&pending==0&&JsonData.Encode(repeated)==JsonData.Encode(expanded),"Repair of the same version re-added or changed catalog entries.");
+        });
         Check("different package upgrades an owned old service", () =>
             Require(ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.0"), owner, false), "Existing service would keep its old binaries."));
         Check("same version with different bytes still replaces the package", () =>
@@ -53,9 +76,9 @@ public static class ServiceUpgradeTests
         Check("four-component receipt version matches current release", () =>
             Require(!ServiceInstaller.PackageNeedsUpdate(Receipt(AppVersion.Current + ".0"), owner, true), "Equivalent version formats caused an upgrade or downgrade."));
         Check("newer receipt cannot be downgraded", () =>
-            Reject<InvalidOperationException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.13"), owner, false)));
+            Reject<InvalidOperationException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt(newerVersion.ToString()), owner, false)));
         Check("newer installed DLL cannot be hidden by an older receipt", () =>
-            Reject<InvalidOperationException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.0"), owner, false, new Version(0, 1, 13, 0))));
+            Reject<InvalidOperationException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("0.1.0"), owner, false, newerVersion)));
         Check("unknown receipt version does not authorize replacement", () =>
             Reject<InvalidDataException>(() => ServiceInstaller.PackageNeedsUpdate(Receipt("broken"), owner, false)));
         Check("another owner cannot reinstall even an identical package", () =>
