@@ -2,5 +2,7 @@
   "version": "0.1.15",
   "title": "RtlineDnsPilot 0.1.15 — каталог DNS и исправления проверок",
   "notes": "release-notes-0.1.15.md",
-  "prerelease": true
+  "prerelease": true,
+  "recoverDraftId": 446714470,
+  "recoverDraftFromCommit": "aeb632d84e3a5e7ac999177f47dd87a5978f86dd"
 }

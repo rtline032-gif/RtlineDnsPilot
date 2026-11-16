@@ -103,10 +103,17 @@ function Invoke-GitHub([string]$Method,[string]$Path,$Body=$null) {
     if ($null -ne $Body) { $taskArgs.Body=($Body|ConvertTo-Json -Depth 10 -Compress);$taskArgs.ContentType='application/json; charset=utf-8' }
     Invoke-RestMethod @taskArgs
 }
-$taskExistingRelease=$null
-try { $taskExistingRelease=Invoke-GitHub 'GET' ('repos/' + $taskRepository + '/releases/tags/' + $taskTag) }
-catch [Microsoft.PowerShell.Commands.HttpResponseException] { if ([int]$_.Exception.Response.StatusCode -ne 404) { throw } }
-if ($null -ne $taskExistingRelease) { throw 'This release already exists; no release or asset is overwritten.' }
+$taskExistingReleases=@(Invoke-GitHub 'GET' ('repos/' + $taskRepository + '/releases?per_page=100') | Where-Object tag_name -eq $taskTag)
+$taskRecoverIdProperty=$taskConfig.PSObject.Properties['recoverDraftId']
+$taskRecoverCommitProperty=$taskConfig.PSObject.Properties['recoverDraftFromCommit']
+$taskRelease=$null
+if ($null -ne $taskRecoverIdProperty -or $null -ne $taskRecoverCommitProperty) {
+    if ($null -eq $taskRecoverIdProperty -or $null -eq $taskRecoverCommitProperty -or [long]$taskRecoverIdProperty.Value -le 0 -or [string]$taskRecoverCommitProperty.Value -notmatch '^[0-9a-f]{40}$') { throw 'Invalid explicit draft recovery coordinates.' }
+    $taskRelease=Invoke-GitHub 'GET' ('repos/' + $taskRepository + '/releases/' + [long]$taskRecoverIdProperty.Value)
+    if ($taskExistingReleases.Count -ne 1 -or $taskExistingReleases[0].id -ne $taskRelease.id -or $taskRelease.id -ne [long]$taskRecoverIdProperty.Value -or $taskRelease.tag_name -ne $taskTag -or -not $taskRelease.draft -or $taskRelease.target_commitish -cne [string]$taskRecoverCommitProperty.Value) { throw 'Explicit draft recovery does not match the expected ID, tag, unpublished state and original commit.' }
+    $taskAssetNames=@($taskAssets | ForEach-Object { [IO.Path]::GetFileName($_) })
+    if (@($taskRelease.assets).Count -ne $taskAssetNames.Count -or @($taskRelease.assets | Where-Object name -notin $taskAssetNames).Count) { throw 'The recovery draft has unexpected assets; no assets were changed.' }
+} elseif ($taskExistingReleases.Count) { throw 'This release already exists; no release or asset is overwritten.' }
 $taskExistingTag=$null
 try { $taskExistingTag=Invoke-GitHub 'GET' ('repos/' + $taskRepository + '/git/ref/tags/' + $taskTag) }
 catch [Microsoft.PowerShell.Commands.HttpResponseException] { if ([int]$_.Exception.Response.StatusCode -ne 404) { throw } }
@@ -118,12 +125,25 @@ $taskPrevious = @($taskPreviousJson | ConvertFrom-Json)
 foreach ($taskEntry in $taskPrevious) {
     if ($taskEntry.tag_name -match '^v?(\d+\.\d+\.\d+)$' -and [version]$Matches[1] -ge $taskVersion) { throw 'Update metadata already contains this or a newer release; refusing a downgrade or overwrite.' }
 }
-$taskGhArguments=@('release','create',$taskTag)+$taskAssets+@('--repo',$taskRepository,'--draft','--target',$env:GITHUB_SHA,'--title',[string]$taskConfig.title,'--notes-file',$taskNotes)
-if ([bool]$taskConfig.prerelease) { $taskGhArguments+='--prerelease' }
-& gh @taskGhArguments
-if ($LASTEXITCODE -ne 0) { throw 'Draft release upload failed. Existing update metadata was retained.' }
-$taskRelease = Invoke-GitHub 'GET' ('repos/' + $taskRepository + '/releases/tags/' + $taskTag)
-if (-not $taskRelease.draft -or $taskRelease.target_commitish -ne $env:GITHUB_SHA) { throw 'Unexpected draft release state or target.' }
+$taskReleaseBody=@{tag_name=$taskTag;target_commitish=$env:GITHUB_SHA;name=[string]$taskConfig.title;body=[IO.File]::ReadAllText($taskNotes);draft=$true;prerelease=[bool]$taskConfig.prerelease}
+if ($null -ne $taskRelease) {
+    $taskPreviousAssets=@($taskRelease.assets)
+    $taskRelease=Invoke-GitHub 'PATCH' ('repos/' + $taskRepository + '/releases/' + $taskRelease.id) $taskReleaseBody
+    if (-not $taskRelease.draft -or $taskRelease.target_commitish -cne $env:GITHUB_SHA -or $taskRelease.id -ne [long]$taskRecoverIdProperty.Value -or $taskRelease.tag_name -ne $taskTag) { throw 'Retargeting the explicit recovery draft was not confirmed.' }
+    foreach ($taskOldAsset in $taskPreviousAssets) {
+        $taskGuard=Invoke-GitHub 'GET' ('repos/' + $taskRepository + '/releases/' + $taskRelease.id)
+        if (-not $taskGuard.draft -or $taskGuard.tag_name -ne $taskTag -or $taskGuard.target_commitish -cne $env:GITHUB_SHA) { throw 'The recovery release changed; remaining assets were preserved.' }
+        $null=Invoke-GitHub 'DELETE' ('repos/' + $taskRepository + '/releases/assets/' + $taskOldAsset.id)
+    }
+} else { $taskRelease=Invoke-GitHub 'POST' ('repos/' + $taskRepository + '/releases') $taskReleaseBody }
+$taskReleaseId=[long]$taskRelease.id
+if ($taskReleaseId -le 0 -or -not $taskRelease.draft -or $taskRelease.tag_name -ne $taskTag -or $taskRelease.target_commitish -cne $env:GITHUB_SHA) { throw 'Unexpected draft release ID, state or target.' }
+foreach ($taskAsset in $taskAssets) {
+    $taskUploadUri='https://uploads.github.com/repos/' + $taskRepository + '/releases/' + $taskReleaseId + '/assets?name=' + [Uri]::EscapeDataString([IO.Path]::GetFileName($taskAsset))
+    $null=Invoke-RestMethod -Method Post -Uri $taskUploadUri -Headers $taskApiHeaders -InFile $taskAsset -ContentType 'application/octet-stream' -MaximumRedirection 0 -TimeoutSec 120
+}
+$taskRelease = Invoke-GitHub 'GET' ('repos/' + $taskRepository + '/releases/' + $taskReleaseId)
+if (-not $taskRelease.draft -or $taskRelease.tag_name -ne $taskTag -or $taskRelease.target_commitish -cne $env:GITHUB_SHA) { throw 'The draft changed before uploaded asset verification.' }
 $taskSumsItem=Get-Item -LiteralPath (Join-Path $taskOutput 'SHA256SUMS.txt')
 $taskExpected = @($taskRecords) + @([pscustomobject]@{name=$taskSumsItem.Name;size=$taskSumsItem.Length;digest=('sha256:'+(Get-FileHash -LiteralPath $taskSumsItem.FullName -Algorithm SHA256).Hash.ToLowerInvariant())})
 if (@($taskRelease.assets).Count -ne $taskExpected.Count) { throw 'Uploaded draft asset count differs.' }
@@ -131,9 +151,8 @@ foreach ($taskExpectedAsset in $taskExpected) {
     $taskUploaded = @($taskRelease.assets | Where-Object name -eq $taskExpectedAsset.name)
     if ($taskUploaded.Count -ne 1 -or $taskUploaded[0].size -ne $taskExpectedAsset.size -or $taskUploaded[0].digest -ne $taskExpectedAsset.digest -or $taskUploaded[0].state -ne 'uploaded') { throw ('Uploaded asset verification failed: ' + $taskExpectedAsset.name) }
 }
-& gh release edit $taskTag --repo $taskRepository --draft=false --latest=false
-if ($LASTEXITCODE -ne 0) { throw 'Publishing the verified draft failed; update metadata was retained.' }
-$taskRelease = Invoke-GitHub 'GET' ('repos/' + $taskRepository + '/releases/tags/' + $taskTag)
+$null=Invoke-GitHub 'PATCH' ('repos/' + $taskRepository + '/releases/' + $taskReleaseId) @{draft=$false;make_latest='false'}
+$taskRelease = Invoke-GitHub 'GET' ('repos/' + $taskRepository + '/releases/' + $taskReleaseId)
 if ($taskRelease.draft -or -not $taskRelease.published_at) { throw 'Release publication was not confirmed.' }
 $taskModernName='RtlineDnsPilot-'+$taskVersionText+'-win-x64.zip'
 $taskLegacyName='RtlineDnsPilot-'+$taskVersionText+'-win7-x64.zip'
