@@ -6,6 +6,7 @@ on:
     paths:
       - release.json
       - .github/workflows/release.yml
+      - scripts/publish-release.ps1
   workflow_dispatch:
 
 permissions:

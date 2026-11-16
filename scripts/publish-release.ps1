@@ -103,7 +103,8 @@ function Invoke-GitHub([string]$Method,[string]$Path,$Body=$null) {
     if ($null -ne $Body) { $taskArgs.Body=($Body|ConvertTo-Json -Depth 10 -Compress);$taskArgs.ContentType='application/json; charset=utf-8' }
     Invoke-RestMethod @taskArgs
 }
-$taskExistingReleases=@(Invoke-GitHub 'GET' ('repos/' + $taskRepository + '/releases?per_page=100') | Where-Object tag_name -eq $taskTag)
+$taskReleasePage=Invoke-GitHub 'GET' ('repos/' + $taskRepository + '/releases?per_page=100')
+$taskExistingReleases=@($taskReleasePage | Where-Object tag_name -eq $taskTag)
 $taskRecoverIdProperty=$taskConfig.PSObject.Properties['recoverDraftId']
 $taskRecoverCommitProperty=$taskConfig.PSObject.Properties['recoverDraftFromCommit']
 $taskRelease=$null
