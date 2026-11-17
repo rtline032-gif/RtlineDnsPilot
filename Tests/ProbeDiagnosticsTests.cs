@@ -60,6 +60,8 @@ public static class ProbeDiagnosticsTests
                 && result.Detail.Contains("AAAA:", StringComparison.Ordinal) && result.Detail.Contains("айм-аут", StringComparison.OrdinalIgnoreCase),
                 "The transport, family or timeout phase was lost.");
             Require(!result.Detail.Contains("question-must-not-be-logged", StringComparison.Ordinal), "An ordinary DNS question leaked into diagnostics.");
+            Require(result.Diagnostics is { Dns.Count: 2, Attempts.Count: 0 } && result.Diagnostics.Dns.All(d => d.State == "timeout"),
+                "DNS timeouts were lost or invented a target TCP/TLS attempt.");
         });
         await Check("unspecified A and AAAA answers remain a DNS failure without an HTTPS attempt", async () =>
         {
@@ -68,6 +70,8 @@ public static class ProbeDiagnosticsTests
                 "Unspecified DNS answers advanced to HTTPS: " + result.Stage + "; " + result.Detail);
             Require(result.Detail.Contains("0.0.0.0", StringComparison.Ordinal) && result.Detail.Contains("::", StringComparison.Ordinal),
                 "Rejected unspecified A/AAAA answers were lost from DNS diagnostics.");
+            Require(result.Diagnostics is { Dns.Count: 2, Attempts.Count: 0 } && result.Diagnostics.Dns.All(d => d.State == "rejected"),
+                "Unspecified answers lost their separate family records.");
         });
         await Check("a usable address alongside unspecified DNS answers still reaches HTTPS", async () =>
         {
@@ -82,6 +86,11 @@ public static class ProbeDiagnosticsTests
                 "The complete TLS attempt did not advance to the second address with the intended SNI.");
             Require(!fixture.Result.Success && fixture.Result.Stage == "https" && fixture.Result.Detail.Contains("TLS/сертификат", StringComparison.Ordinal),
                 "The second address's untrusted certificate was accepted or its failure was lost: " + fixture.Result.Stage + "; " + fixture.Result.Detail);
+            Require(fixture.Result.Diagnostics is { Attempts.Count: 2 } details
+                && details.Attempts[0].Address == "127.0.0.1" && details.Attempts[0].Tcp.State == "success" && details.Attempts[0].Tls.State == "timeout"
+                && details.Attempts[1].Address == "127.0.0.2" && details.Attempts[1].Tcp.State == "success" && details.Attempts[1].Tls.State == "error"
+                && details.Attempts.All(a => a.Http.State == "not-started"),
+                "A later certificate error erased the earlier TLS timeout or invented HTTP headers.");
         });
         await Check("caller cancellation stops HTTPS without retrying the next address", async () =>
         {
@@ -107,6 +116,9 @@ public static class ProbeDiagnosticsTests
                 });
                 Require(fixture.Attempts.Count == 1 && fixture.Result.HttpStatus == status && fixture.Result.Stage == "http"
                     && fixture.Result.Success == (status is >= 200 and < 400), "An HTTP response retried or changed reachability: " + status);
+                Require(fixture.Result.Diagnostics is { Attempts.Count: 1 } details && details.Attempts[0].HttpStatus == status
+                    && details.Attempts[0].Http.State == "success" && details.Attempts[0].Tcp.State == "unknown",
+                    "An HTTP status disappeared or an unobserved fake transport became measured TCP.");
             }
         });
         await Check("a failed TCP address permits a successful complete HTTPS attempt on the reserve", async () =>

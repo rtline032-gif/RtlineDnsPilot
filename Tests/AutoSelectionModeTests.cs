@@ -16,7 +16,7 @@ public static class AutoSelectionModeTests
         static void Require(bool condition,string message){if(!condition)throw new Exception(message);}
         static void Reject(Action action)
         {try{action();}catch(ArgumentException){return;}throw new Exception("An undefined automatic mode was accepted.");}
-        var now=DateTimeOffset.UtcNow.AddMilliseconds(-10);var config=AppConfig.Defaults();var key=MonitoringTargets.Key(config);
+        var now=DateTimeOffset.UtcNow.AddMilliseconds(-10);var config=AppConfig.Defaults();config.Profiles[0].Enabled=true;var key=MonitoringTargets.Key(config);
         string a=config.Profiles[0].Id,b=config.Profiles[1].Id,c=config.Profiles[2].Id;
         ProfileStats Stats(string id,bool[] successes,double ms=100)
         {

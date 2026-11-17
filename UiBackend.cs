@@ -182,6 +182,56 @@ public sealed class UiBackend : IAsyncDisposable
             && first.Profiles.All(profile=>second.Profiles.Any(other=>profile.Id==other.Id
                 && profile.Enabled==other.Enabled && AppConfig.SameEffectiveConfiguration(profile,other)));
 
+    public async Task<ChannelDiagnosticsSnapshot> ReadProbeDiagnosticsAsync(string profileId,CancellationToken token=default)
+    {
+        if((profileId?.Length??0)>68 || !Guid.TryParse(profileId,out var requested))
+            throw new ArgumentException("Укажите GUID канала для чтения диагностики.",nameof(profileId));
+        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        bool entered=false;
+        try
+        {
+            await _gate.WaitAsync(timeout.Token);entered=true;
+            if(_disposed) throw new ObjectDisposedException(GetType().FullName);
+            var profile=_config.Profiles.FirstOrDefault(p=>Guid.TryParse(p.Id,out var id)&&id==requested)
+                ??throw new InvalidOperationException("Канал отсутствует в текущих настройках. Обновите состояние.");
+            var monitoringKey=MonitoringTargets.Key(_config);
+            var contextKey=ChartHistoryArchive.ContextKey(profile,monitoringKey);
+            if(_connected)
+            {
+                if(!Version.TryParse(Status.ServiceVersion,out var version)||version<new Version(0,1,18))
+                    throw new InvalidOperationException("Для подробной диагностики нажмите «Обновить службу». Старая служба не сохраняет отдельные DNS / TCP / TLS / HTTP-фазы.");
+                if(_pendingConfiguration && (_lastServiceStatus is null
+                    || MonitoringTargets.Key(_lastServiceStatus.Config)!=monitoringKey
+                    || !_lastServiceStatus.Config.Profiles.Any(p=>Guid.TryParse(p.Id,out var id)&&id==requested
+                        && p.Enabled==profile.Enabled && ChartHistoryArchive.ContextKey(p,monitoringKey)==contextKey)))
+                    throw new InvalidOperationException("Канал или объекты проверок изменены локально. Сначала нажмите «Применить настройки»: диагностика службы относится к прежним настройкам.");
+                var reply=await _service.SendAsync(new RpcRequest {Command="probe-diagnostics",ProfileId=profile.Id},timeout.Token);
+                if(!reply.Ok) throw new InvalidOperationException(reply.Error??"Служба не вернула диагностику канала. Проверьте связь и версию службы.");
+                var snapshot=reply.ProbeDiagnostics??throw new InvalidOperationException("Служба не поддерживает подробную диагностику. Нажмите «Обновить службу».");
+                var targets=MonitoringTargets.Selected(_config);
+                if(!Guid.TryParse(snapshot.ProfileId,out var actual)||actual!=requested || snapshot.MonitoringKey!=monitoringKey
+                    || snapshot.ContextKey!=contextKey || snapshot.Targets is null || snapshot.Services is null
+                    || snapshot.Targets.Count!=targets.Length
+                    || targets.Any(t=>snapshot.Targets.Count(s=>s is not null && s.Id==t.Id && s.Url==t.Url)!=1)
+                    || snapshot.Services.Count>targets.Length
+                    || snapshot.Services.Any(s=>s is null || !targets.Any(t=>t.Id==s.ServiceId))
+                    || snapshot.Services.Select(s=>s.ServiceId).Distinct(StringComparer.Ordinal).Count()!=snapshot.Services.Count)
+                    throw new InvalidOperationException("Настройки диагностики службы изменились. Обновите состояние и повторите открытие канала.");
+                return JsonData.Clone(ChannelDiagnostics.BoundedCopy(snapshot));
+            }
+            if(DnsStateUnknown || (!RecoveryConfirmed && (_service.IsInstalled || _everConnected)))
+                throw new InvalidOperationException("Нет подтверждённой связи со службой. Её диагностика недоступна; нажмите «Проверить связь» или «Исправить службу».");
+            if(_local is null) throw new InvalidOperationException("Локальное наблюдение ещё не запущено. Дождитесь обновления состояния.");
+            return _local.GetProbeDiagnostics(profile.Id);
+        }
+        catch(OperationCanceledException) when(!token.IsCancellationRequested)
+        {throw new TimeoutException("Служба не вернула диагностику за 3 секунды. Нажмите «Проверить связь» или повторите открытие канала.");}
+        catch(IOException ex)
+        {throw new InvalidOperationException("Не удалось прочитать диагностику службы. Нажмите «Проверить связь». "+ex.Message,ex);}
+        finally {if(entered)_gate.Release();}
+    }
+
     public async Task<DnsShareOffer> ReadShareCandidatesAsync(CancellationToken token=default)
     {
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);

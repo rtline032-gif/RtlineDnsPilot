@@ -23,6 +23,63 @@ public static class BundledChannelTests
                 "Historical or failed optional candidates were silently enabled in a fresh catalog.");
             return Task.CompletedTask;
         });
+        await Check("confirmed provider notices disable new Xbox defaults and explain static Zapret limitations", () =>
+        {
+            var catalog = BundledChannels.All();
+            Require(!AppConfig.Defaults().Profiles.Single(p => p.Name == "Xbox DNS").Enabled,
+                "A fresh initial Xbox profile ignored the provider's temporary outage notice.");
+            foreach (var profile in catalog.Where(p => p.Name.StartsWith("Xbox DNS", StringComparison.Ordinal)))
+            {
+                Require(!profile.Enabled && profile.Note.Contains("17.11.2026") && profile.Note.Contains("https://xbox-dns.ru/")
+                    && profile.Note.Contains("временной неработоспособности"),
+                    "A new Xbox profile was enabled or lost the dated provider notice.");
+            }
+            var zapret = catalog.Where(p => p.Name.StartsWith("Zapret DNS", StringComparison.Ordinal)).ToList();
+            Require(zapret.Count == 4 && zapret.All(p => !p.Enabled && p.Note.Contains("17.11.2026")
+                && p.Note.Contains("https://dns.zapret.moe/") && p.Note.Contains("без постоянного IP")),
+                "Historical Zapret variants were dropped, enabled or presented as current fixed-IP defaults.");
+            foreach (var profile in zapret)
+            {
+                Require(profile.Servers.SequenceEqual([profile.Name.Contains("2026-11") ? "38.180.241.191" : "83.217.211.149"]),
+                    "A documented provider notice silently replaced a retained Zapret address.");
+                Require(profile.Mode == DnsMode.Doh
+                    ? profile.Note.Contains("статический bootstrap") && profile.Note.Contains("не доказывает отключение именно этого IP")
+                    : profile.Note.Contains("53") && profile.Note.Contains("853") && profile.Note.Contains("03.11.2026"),
+                    "The notice did not distinguish unsupported static DoH from the provider's closed DNS ports.");
+            }
+            return Task.CompletedTask;
+        });
+        await Check("catalog provider notices preserve saved Xbox and Zapret identities flags notes and selection", () =>
+        {
+            var config = new AppConfig { Profiles = BundledChannels.All().Where(p =>
+                p.Name.StartsWith("Xbox DNS", StringComparison.Ordinal) || p.Name.StartsWith("Zapret DNS", StringComparison.Ordinal)).ToList() };
+            foreach (var profile in config.Profiles)
+            {
+                profile.Id = Guid.NewGuid().ToString("B").ToUpperInvariant();
+                profile.Enabled = true;
+                profile.Note = "Saved user note: " + profile.Name;
+            }
+            config.ManualProfileId = config.Profiles[0].Id;
+            config.ManualUntil = DateTimeOffset.UtcNow.AddHours(1);
+            config.PinnedProfileId = config.Profiles[1].Id;
+            var before = JsonData.Encode(config);
+            var expanded = BundledChannels.AddMissing(config, out var added, BundledChannels.PreviousRevision);
+            var retained = JsonData.Clone(expanded); retained.Profiles = retained.Profiles.Take(config.Profiles.Count).ToList();
+            Require(added == 20 && expanded.Profiles.Count == 26 && JsonData.Encode(retained) == before && JsonData.Encode(config) == before,
+                "Metadata corrections changed saved provider identities, enabled flags, notes or manual/preferred selection.");
+            return Task.CompletedTask;
+        });
+        await Check("metadata correction does not reopen the accepted 16 November catalog migration", () =>
+        {
+            var config = new AppConfig { Profiles = BundledChannels.All() };
+            config.Profiles.RemoveAll(p => p.Name.StartsWith("Xbox DNS", StringComparison.Ordinal)
+                || p.Name.StartsWith("Zapret DNS", StringComparison.Ordinal));
+            var before = JsonData.Encode(config);
+            var unchanged = BundledChannels.AddMissing(config, out var added, "2026-11-16");
+            Require(added == 0 && JsonData.Encode(unchanged) == before && BundledChannels.PendingCount(unchanged, "2026-11-16") == 0,
+                "A metadata-only refresh restored profiles deleted after an accepted catalog revision.");
+            return Task.CompletedTask;
+        });
         await Check("a new catalog revision fills all missing profiles while preserving existing channel settings", () =>
         {
             var config = new AppConfig { Profiles = BundledChannels.All().Take(15).ToList() };

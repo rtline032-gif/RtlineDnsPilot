@@ -16,6 +16,8 @@ public sealed class MonitoringEndpoint
 public sealed class ServiceProbeResult
 {
     [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ProbeDiagnostics? Diagnostics { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? CountryCode { get; set; }
     [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public ConnectionCountrySource CountrySource { get; set; }
@@ -96,7 +98,7 @@ public static class MonitoringTargets
         if(sample.Services.FirstOrDefault(s=>s.ServiceId==id) is { } service) return service;
         return id==ChatGpt && sample.Services.Count==0
             ? new ServiceProbeResult {ServiceId=id,At=sample.At,Success=sample.Success,DnsMs=sample.DnsMs,HttpsMs=sample.HttpsMs,
-                HttpStatus=sample.HttpStatus,Stage=sample.Stage,Detail=sample.Detail,CountryCode=sample.CountryCode,CountrySource=sample.CountrySource} : null;
+                HttpStatus=sample.HttpStatus,Stage=sample.Stage,Detail=sample.Detail,CountryCode=sample.CountryCode,CountrySource=sample.CountrySource,Diagnostics=sample.Diagnostics} : null;
     }
     public static string ServiceSummary(ServiceProbeResult? result) => result is null ? "Нет измерений"
         : (result.Success?"Доступен":"Недоступен")+(result.HttpStatus is {} code?" · HTTP "+code:" · "+result.Stage);
@@ -130,7 +132,7 @@ public static class MonitoringTargets
                 var result=await check(profile,target.Url,TimeSpan.FromSeconds(config.TimeoutSeconds),token);
                 return (profile.Id,Service:new ServiceProbeResult {ServiceId=target.Id,At=result.At,Success=result.Success,
                     DnsMs=result.DnsMs,HttpsMs=result.HttpsMs,HttpStatus=result.HttpStatus,Stage=result.Stage,Detail=result.Detail,
-                    CountryCode=result.CountryCode,CountrySource=result.CountrySource});
+                    CountryCode=result.CountryCode,CountrySource=result.CountrySource,Diagnostics=result.Diagnostics});
             }
             finally {parallel.Release();}
         })).ToArray();

@@ -168,6 +168,7 @@ public static class MonitoringTests
         Check("freshness covers a bounded round of all selected services",()=>
         {
             var config=Config(true,true);config.IntervalSeconds=10;config.TimeoutSeconds=30;
+            config.Profiles[0].Enabled=true;
             config.AdditionalTargets=Enumerable.Range(1,6).Select(i=>Custom("Service "+i,$"https://service{i}.example/")).ToList();
             Require(MonitoringTargets.FreshnessSeconds(config)==190,"The round freshness does not cover 24 probes in four slots and the interval.");
             config.Profiles[0].Enabled=false;
@@ -190,6 +191,7 @@ public static class MonitoringTests
         await CheckAsync("coordinator checks only enabled channels and enabled custom targets",async()=>
         {
             var config=Config(false,false);var enabled=Custom();config.AdditionalTargets=[enabled,Custom("Disabled","https://disabled.example/",false)];
+            config.Profiles[0].Enabled=true;
             config.Profiles[1].Enabled=false;config.Profiles[2].Enabled=false;
             var calls=new List<(string Profile,string Url)>();
             var results=await MonitoringTargets.CheckAsync(config,(profile,url,timeout,token)=>
@@ -205,6 +207,7 @@ public static class MonitoringTests
         await CheckAsync("coordinator applies a single four-request concurrency limit across services",async()=>
         {
             var config=Config(true,true);config.AdditionalTargets=[Custom()];
+            config.Profiles[0].Enabled=true;
             var release=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var saturated=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var active=0;var maximum=0;var calls=0;
@@ -225,6 +228,7 @@ public static class MonitoringTests
         await CheckAsync("cancellation stops active and queued monitoring requests",async()=>
         {
             var config=Config(true,true);
+            config.Profiles[0].Enabled=true;
             var saturated=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var active=0;var calls=0;
             using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(5));

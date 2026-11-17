@@ -100,6 +100,7 @@ public static class ChannelTableOrderTests
             try
             {
                 var config = AppConfig.Defaults(); config.MonitoringPaused = true;
+                config.Profiles[0].Enabled = true;
                 AtomicStore.Write(Path.Combine(root, "ui-config.json"), config);
                 var now = DateTimeOffset.UtcNow;
                 var service = new UiPersistenceTests.FakeService { State = new AppStatus { Config = config, ServiceVersion = AppVersion.Current,

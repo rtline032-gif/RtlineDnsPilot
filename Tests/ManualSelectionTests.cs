@@ -14,6 +14,7 @@ public static class ManualSelectionTests
         void Require(bool condition,string message) {if(!condition) throw new Exception(message);}
         var now=DateTimeOffset.UtcNow;
         var config=AppConfig.Defaults();
+        config.Profiles[0].Enabled=true;
         var a=config.Profiles[0].Id;var b=config.Profiles[1].Id;
         ProfileStats Stats(string id,bool success,int count)
         {

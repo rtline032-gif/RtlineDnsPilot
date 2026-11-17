@@ -18,6 +18,7 @@ public static class CountryTests
         await Check("per-object monitoring preserves each site's own country without copying it to another site",async ()=>
         {
             var config=AppConfig.Defaults();config.MonitorGemini=true;config.Profiles=config.Profiles.Take(1).ToList();
+            config.Profiles[0].Enabled=true;
             var results=await MonitoringTargets.CheckAsync(config,(profile,url,timeout,token)=>
                 Task.FromResult(WithCountry(profile.Id,url==MonitoringTargets.GeminiUrl?"DE":"NL")),CancellationToken.None);
             var json=JsonNode.Parse(JsonData.Encode(results.Single()))!;

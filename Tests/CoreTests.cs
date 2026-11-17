@@ -23,7 +23,7 @@ public static class CoreTests
         if(args.Contains("--catalog-toggle-only")) { await BundledChannelTests.RunAsync(Report); ServiceUpgradeTests.Run(Report); await ChannelToggleTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--channel-table-only")) { await ChannelTableOrderTests.RunAsync(Report); await ChannelToggleTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--reconnect-applications-only")) { ApplicationConnectionResetTests.Run(Report); await ApplicationReconnectLauncherTests.RunAsync(Report); return failures==0?0:1; }
-        if(args.Contains("--probe-diagnostics-only")) { await ProbeDiagnosticsTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--probe-diagnostics-only")) { await ProbeDiagnosticsTests.RunAsync(Report); await ProbePhaseTests.RunAsync(Report); await ProbeDiagnosticsUiTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--monitoring-only")) { await MonitoringTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--manual-only")) { await ManualSelectionTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--automatic-dns-only")) { await AutomaticDnsTests.RunAsync(Report); return failures==0?0:1; }
@@ -52,6 +52,8 @@ public static class CoreTests
         ApplicationConnectionResetTests.Run(Report);
         await ApplicationReconnectLauncherTests.RunAsync(Report);
         await ProbeDiagnosticsTests.RunAsync(Report);
+        await ProbePhaseTests.RunAsync(Report);
+        await ProbeDiagnosticsUiTests.RunAsync(Report);
         await UiPersistenceTests.RunAsync(Report);
         ServiceUpgradeTests.Run(Report);
         await BundledChannelTests.RunAsync(Report);
@@ -91,6 +93,7 @@ public static class CoreTests
         Check("DoH rejects plaintext endpoint", () => { var p=JsonData.Clone(config.Profiles[0]); p.DohUrl="http://xbox-dns.ru/dns-query"; Reject(p.Validate); });
         Check("DNS recursion to loopback is rejected", () => { var p=JsonData.Clone(config.Profiles[0]); p.Servers=["127.0.0.1"]; Reject(p.Validate); });
         Check("duplicate profile IDs rejected", () => { var c=JsonData.Clone(config); c.Profiles[1].Id=c.Profiles[0].Id; Reject(c.Validate); });
+        config.Profiles[0].Enabled = true;
         var now = DateTimeOffset.UtcNow;
         ProfileStats Stats(string id,int successes,double ms,int failures=0) { var s=new ProfileStats { ProfileId=id }; for(int i=0;i<successes;i++) s.Add(new ProbeResult { ProfileId=id,At=now,Success=true,HttpsMs=ms }); for(int i=0;i<failures;i++) s.Add(new ProbeResult { ProfileId=id,At=now,Success=false,Detail="timeout" }); return s; }
         var a=config.Profiles[0].Id; var b=config.Profiles[1].Id;

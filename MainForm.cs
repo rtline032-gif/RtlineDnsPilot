@@ -32,6 +32,7 @@ public sealed class MainForm : Form
     private readonly Button _reconnectApplications = MakeButton("Переподключить приложения");
     private readonly Button _add = MakeButton("Добавить");
     private readonly Button _edit = MakeButton("Изменить");
+    private readonly Button _diagnostics = MakeButton("Диагностика канала");
     private readonly Button _delete = MakeButton("Удалить");
     private readonly Button _import = MakeButton("Добавить из JSON");
     private readonly Button _export = MakeButton("Экспорт JSON");
@@ -64,6 +65,7 @@ public sealed class MainForm : Form
     private readonly ToolStripMenuItem _contextAutoStable = new("Самый стабильный");
     private readonly ToolStripMenuItem _contextAutoFast = new("Самый быстрый");
     private readonly ToolStripMenuItem _contextDelete = new("Удалить канал…");
+    private readonly ToolStripMenuItem _contextDiagnostics = new("Диагностика канала");
     private string? _contextProfileId;
     private readonly NumericUpDown _interval = new() { Minimum = 10, Maximum = 3600, Width = 120 };
     private readonly NumericUpDown _timeout = new() { Minimum = 2, Maximum = 30, Width = 120 };
@@ -193,6 +195,7 @@ public sealed class MainForm : Form
         _tips.SetToolTip(_monitor, "Приостановить только проверки и автоматический выбор канала. Управление DNS не отключается: служба продолжает пересылать DNS через текущий канал. Для отключения нажмите «Отключить управление».");
         _tips.SetToolTip(_disable, "Отключить управление и вернуть исходные DNS. Если служба не отвечает, появится отдельное подтверждение запуска помощника восстановления и окно разрешения Windows.");
         _tips.SetToolTip(_reconnect, "Повторить запрос состояния службы сейчас. Этот запрос не меняет DNS и не запрашивает права администратора.");
+        _tips.SetToolTip(_diagnostics, "Прочитать последний сохранённый результат выбранного канала: DNS-ответы, целевые IP и фазы TCP / TLS / HTTP. Новая проверка не запускается.");
         _tips.SetToolTip(_automaticDns, "После отдельного подтверждения и UAC: отключить управление RtlineDnsPilot и получать DNS выбранного адаптера автоматически от сети. Это заменит ручные DNS.");
         _tips.SetToolTip(_updateApplication,"Скачать проверенный новый выпуск из официального GitHub и перезапустить программу. Каналы и история сохранятся. Если служба установлена, Windows запросит разрешение на её обновление; управление DNS после обновления будет выключено.");
         _tips.SetToolTip(_prefer, "Предпочтительный канал используется, пока доступен. При устойчивом отказе сохраняется аварийное переключение.");
@@ -247,6 +250,7 @@ public sealed class MainForm : Form
         _reconnectApplications.Click += async (_, _) => await ReconnectApplicationsAsync();
         _add.Click += async (_, _) => await EditProfileAsync(true);
         _edit.Click += async (_, _) => await EditProfileAsync(false);
+        _diagnostics.Click += (_, _) => ShowProbeDiagnostics();
         _delete.Click += async (_, _) => await DeleteProfileAsync();
         _import.Click += async (_, _) => await ImportAsync();
         _export.Click += (_, _) => Export();
@@ -288,7 +292,8 @@ public sealed class MainForm : Form
             e.Handled = true;
         };
         _contextAutoMode.DropDownItems.AddRange([_contextAutoStable, _contextAutoFast]);
-        _channelMenu.Items.AddRange([_fixPermanent, _fixFive, _fixFifteen, _fixHour, new ToolStripSeparator(), _contextAuto, _contextAutoMode, new ToolStripSeparator(), _contextDelete]);
+        _channelMenu.Items.AddRange([_contextDiagnostics, new ToolStripSeparator(), _fixPermanent, _fixFive, _fixFifteen, _fixHour, new ToolStripSeparator(), _contextAuto, _contextAutoMode, new ToolStripSeparator(), _contextDelete]);
+        _contextDiagnostics.Click += (_, _) => ShowProbeDiagnostics(_contextProfileId);
         _fixPermanent.Click += async (_, _) => await FixContextChannelAsync(null);
         _fixFive.Click += async (_, _) => await FixContextChannelAsync(5);
         _fixFifteen.Click += async (_, _) => await FixContextChannelAsync(15);
@@ -322,7 +327,8 @@ public sealed class MainForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Margin = new Padding(0) };
-        actions.Controls.AddRange([_add, _edit, _delete, _import, _export, _prefer, _auto]);
+        _diagnostics.Name = "ProbeDiagnostics";
+        actions.Controls.AddRange([_add, _edit, _diagnostics, _delete, _import, _export, _prefer, _auto]);
         layout.Controls.Add(actions, 0, 0);
         layout.Controls.Add(_selection, 0, 1);
         _countryPanel.Controls.Add(_countries);
@@ -917,6 +923,17 @@ public sealed class MainForm : Form
 
     private ChannelProfile? SelectedProfile() => _grid.SelectedRows.Count == 0 ? null : _backend.Status.Config.Profiles.FirstOrDefault(p => p.Id == _grid.SelectedRows[0].Tag as string);
 
+    private void ShowProbeDiagnostics(string? profileId = null)
+    {
+        if (_busy || IsDisposed || _reallyClose) return;
+        var id = profileId ?? SelectedProfile()?.Id;
+        var profile = _backend.Status.Config.Profiles.FirstOrDefault(p => p.Id == id);
+        if (profile is null) return;
+        var requestedId = profile.Id;
+        using var dialog = new ProbeDiagnosticsDialog(profile.Name, token => _backend.ReadProbeDiagnosticsAsync(requestedId, token));
+        dialog.ShowDialog(this);
+    }
+
     // Capture the clicked identity before showing the menu; a later poll cannot retarget its action.
     private void OpenChannelMenu(int rowIndex, Point location)
     {
@@ -1006,6 +1023,7 @@ public sealed class MainForm : Form
         _reconnectApplications.Enabled = !_busy;
         _tips.SetToolTip(_reconnectApplications, "Вручную очистить системный DNS-кэш и сбросить внешние TCP/IPv4-соединения HTTPS выбранных Chrome/Codex без закрытия окон. Нужны права администратора; текущие запросы прервутся. IPv6, QUIC и внутренний кэш приложений не сбрасываются.");
         _edit.Enabled = !_busy && SelectedProfile() is not null;
+        _diagnostics.Enabled = _edit.Enabled;
         _delete.Enabled = !_busy && SelectedProfile() is not null && status.Config.Profiles.Count > 1;
         _prefer.Enabled = !_busy && SelectedProfile() is { Enabled: true };
         _adapter.Enabled = !_busy && !status.SystemDnsManaged && !status.DnsRecoveryPending;

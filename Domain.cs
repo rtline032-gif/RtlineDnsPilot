@@ -110,7 +110,7 @@ public sealed class AppConfig
     {
         Profiles =
         [
-            new() { Name = "Xbox DNS", Mode = DnsMode.Doh, Servers = ["111.88.96.54", "111.88.96.55"], DohUrl = "https://xbox-dns.ru/dns-query", Note = "На сайте 22.10.2026: сервис временно недоступен. Проверяйте фактический результат." },
+            new() { Name = "Xbox DNS", Enabled = false, Mode = DnsMode.Doh, Servers = ["111.88.96.54", "111.88.96.55"], DohUrl = "https://xbox-dns.ru/dns-query", Note = "Проверено 17.11.2026: сайт провайдера сообщает, что сервис временно не работает. В новом наборе выключен; это не доказательство постоянного отключения." },
             new() { Name = "Bezmezhau", Mode = DnsMode.Doh, Servers = ["181.215.40.49", "31.58.216.201"], DohUrl = "https://dns.bezmezhau.com/dns-query" },
             new() { Name = "DNS-AI", Mode = DnsMode.Doh, Servers = ["194.87.196.13", "45.151.102.219", "2a00:b700:5::3:62", "2a12:5940:d4ef::219"], DohUrl = "https://dns.dns-ai.ru/dns-query", Note = "Провайдер сообщает: порт 53 закрыт; используйте DoH. Без открытого DNS fallback." }
         ]
@@ -144,6 +144,8 @@ public static class ProfileEditor
 
 public sealed class ProbeResult
 {
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
+    public ProbeDiagnostics? Diagnostics { get; set; }
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
     public string? CountryCode { get; set; }
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
@@ -181,6 +183,9 @@ public sealed class ProfileStats
     public void Add(ProbeResult sample)
     {
         if (Last is { } previous && previous.MonitoringKey != sample.MonitoringKey) { ConsecutiveFailures=0; ConsecutiveSuccesses=0; }
+        // Phase details belong to the latest check only; numeric history and its selection evidence are retained.
+        if (Last is { } old)
+        { old.Diagnostics = null; foreach (var service in old.Services ?? []) service.Diagnostics = null; }
         Samples.Add(sample); if (Samples.Count > 120) Samples.RemoveRange(0, Samples.Count - 120);
         TotalChecks++; if (sample.Success) TotalSuccesses++;
         ConsecutiveSuccesses = sample.Success ? ConsecutiveSuccesses + 1 : 0;
@@ -240,6 +245,8 @@ public sealed class RpcReply
     public AppStatus? Status { get; set; }
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
     public HistoryReport? History { get; set; }
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
+    public ChannelDiagnosticsSnapshot? ProbeDiagnostics { get; set; }
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
     public DnsShareOffer? Share { get; set; }
 }

@@ -166,6 +166,9 @@ public sealed class DnsTransport : IDisposable
     }
 
     internal static HttpClient CreatePinnedClient(Uri uri, IReadOnlyList<IPAddress> addresses)
+        => CreatePinnedClient(uri, addresses, null);
+
+    internal static HttpClient CreatePinnedClient(Uri uri, IReadOnlyList<IPAddress> addresses, ProbeAttemptTrace? trace)
     {
         var handler = new SocketsHttpHandler
         {
@@ -187,11 +190,14 @@ public sealed class DnsTransport : IDisposable
                     var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
                     try
                     {
+                        trace?.TcpStarted();
                         await socket.ConnectAsync(new IPEndPoint(address, uri.Port), attempt.Token).ConfigureAwait(false);
+                        trace?.TcpConnected();
                         return new NetworkStream(socket, ownsSocket: true);
                     }
                     catch (Exception ex) when (ex is SocketException or OperationCanceledException)
                     {
+                        trace?.Failed(ex);
                         socket.Dispose(); if (token.IsCancellationRequested) throw;
                         last = new IOException("TCP-подключение: " + DescribeFailure(ex), ex);
                     }
@@ -199,6 +205,13 @@ public sealed class DnsTransport : IDisposable
                 throw new IOException("Не удалось TCP-подключение к закреплённым адресам HTTPS. " + last?.Message, last);
             }
             // Standard SslOptions defaults preserve hostname/SNI and certificate-chain validation.
+        };
+        // Observe only the target probe, after the handler's standard TLS authentication.
+        // Returning the identical stream neither replaces validation nor reads HTTP bytes.
+        if (trace is not null) handler.PlaintextStreamFilter = (context, _) =>
+        {
+            trace.TlsCompleted(context.NegotiatedHttpVersion);
+            return new ValueTask<Stream>(context.PlaintextStream);
         };
         RuntimeCompatibility.ConfigurePinnedHttpsHandler(handler, RuntimeCompatibility.IsWindows7);
         return new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };

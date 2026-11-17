@@ -26,6 +26,8 @@ public static class StatusProjection
                     MonitoringKey = sample.MonitoringKey, ProfileId = sample.ProfileId, At = sample.At,
                     Success = sample.Success, DnsMs = sample.DnsMs, HttpsMs = sample.HttpsMs, HttpStatus = sample.HttpStatus,
                     Stage = Clip(sample.Stage, 64), Detail = latest ? Clip(sample.Detail, 160) : "",
+                    // Full phase records are available through the bounded per-channel diagnostics RPC,
+                    // never in the frequently polled all-channel status response.
                     CountryCode = latest ? sample.CountryCode : null,
                     CountrySource = latest ? sample.CountrySource : ConnectionCountrySource.None,
                     ServiceDetailsOmitted = !latest || sample.ServiceDetailsOmitted,

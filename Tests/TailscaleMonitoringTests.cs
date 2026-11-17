@@ -93,6 +93,7 @@ public static class TailscaleMonitoringTests
         await CheckAsync("an unchecked Tailscale target never creates a probe",async()=>
         {
             var config=AppConfig.Defaults();foreach(var profile in config.Profiles.Skip(1))profile.Enabled=false;
+            config.Profiles[0].Enabled=true;
             var calls=new List<string>();
             var results=await MonitoringTargets.CheckAsync(config,(profile,url,_,_)=>
             {
@@ -104,6 +105,7 @@ public static class TailscaleMonitoringTests
         await CheckAsync("Tailscale-only coordinator uses its fixed URL without ChatGPT or Gemini probes",async()=>
         {
             var config=AppConfig.Defaults();config.MonitorChatGpt=false;config.MonitorTailscale=true;
+            config.Profiles[0].Enabled=true;
             foreach(var profile in config.Profiles.Skip(1))profile.Enabled=false;var calls=new List<string>();
             var results=await MonitoringTargets.CheckAsync(config,(profile,url,_,_)=>
             {
@@ -115,6 +117,7 @@ public static class TailscaleMonitoringTests
         await CheckAsync("all nine targets share the existing global concurrency bound of four",async()=>
         {
             var config=AllTargets();int active=0,maximum=0;var urls=new ConcurrentBag<string>();
+            config.Profiles[0].Enabled=true;
             var results=await MonitoringTargets.CheckAsync(config,async(profile,url,_,token)=>
             {
                 int current=Interlocked.Increment(ref active);

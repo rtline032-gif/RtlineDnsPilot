@@ -114,6 +114,12 @@ public sealed class MonitorEngine : IAsyncDisposable
         lock(_state) return DnsSharing.Select(_config,_stats,DateTimeOffset.UtcNow);
     }
 
+    public ChannelDiagnosticsSnapshot GetProbeDiagnostics(string profileId)
+    {
+        lock(_state) return ChannelDiagnostics.Create(_config,_stats,profileId,DateTimeOffset.UtcNow,
+            _serviceMode?"Служба RtlineDnsPilot":"Локальное наблюдение");
+    }
+
     public async Task StartAsync()
     {
         if (_monitoring) return;

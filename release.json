@@ -1,6 +1,6 @@
 {
-  "version": "0.1.17",
-  "title": "RtlineDnsPilot 0.1.17 — рабочие каналы сверху и переподключение приложений",
-  "notes": "release-notes-0.1.17.md",
+  "version": "0.1.18",
+  "title": "RtlineDnsPilot 0.1.18 — подробная диагностика соединений",
+  "notes": "release-notes-0.1.18.md",
   "prerelease": true
 }

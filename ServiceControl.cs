@@ -25,7 +25,7 @@ public static class ServiceClient
     public static async Task<RpcReply> SendAsync(RpcRequest request,CancellationToken token=default)
     {
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);
-        deadline.CancelAfter(request.Command is "status" or "history" or "share-candidates"?TimeSpan.FromSeconds(3):TimeSpan.FromSeconds(150));
+        deadline.CancelAfter(request.Command is "status" or "history" or "share-candidates" or "probe-diagnostics"?TimeSpan.FromSeconds(3):TimeSpan.FromSeconds(150));
         using var pipe=new NamedPipeClientStream(".",AppPaths.PipeName,PipeDirection.InOut,PipeOptions.Asynchronous);
         await pipe.ConnectAsync(2000,deadline.Token);
         await PipeMessages.WriteAsync(pipe,JsonData.Encode(request),deadline.Token);
@@ -134,13 +134,16 @@ internal sealed class ServiceRpc(MonitorEngine engine,string ownerSid,string pip
                 try
                 {
                     var request=JsonData.Decode<RpcRequest>(await PipeMessages.ReadAsync(pipe,1024*1024,timeout.Token));
-                    reportOnly=request.Command is "history" or "share-candidates";
+                    reportOnly=request.Command is "history" or "share-candidates" or "probe-diagnostics";
                     if(reportOnly)
                     {
                         timeout.CancelAfter(TimeSpan.FromSeconds(3));
-                        reply=request.Command=="history"
-                            ?new RpcReply {Ok=true,History=engine.GetHistory(request.History??throw new ArgumentException("Не указан период графика."))}
-                            :new RpcReply {Ok=true,Share=engine.GetShareCandidates()};
+                        reply=request.Command switch
+                        {
+                            "history" => new RpcReply {Ok=true,History=engine.GetHistory(request.History??throw new ArgumentException("Не указан период графика."))},
+                            "probe-diagnostics" => new RpcReply {Ok=true,ProbeDiagnostics=engine.GetProbeDiagnostics(request.ProfileId??throw new ArgumentException("Не указан канал диагностики."))},
+                            _ => new RpcReply {Ok=true,Share=engine.GetShareCandidates()}
+                        };
                     }
                     else
                     {

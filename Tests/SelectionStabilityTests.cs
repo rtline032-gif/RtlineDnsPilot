@@ -8,7 +8,7 @@ public static class SelectionStabilityTests
         {try{test();report(name,true,"");}catch(Exception ex){report(name,false,ex.Message);}}
         static void Require(bool condition,string message){if(!condition)throw new Exception(message);}
         var now=new DateTimeOffset(2026,10,22,12,0,0,TimeSpan.Zero);
-        var config=AppConfig.Defaults();var key=MonitoringTargets.Key(config);
+        var config=AppConfig.Defaults();config.Profiles[0].Enabled=true;var key=MonitoringTargets.Key(config);
         string a=config.Profiles[0].Id,b=config.Profiles[1].Id,c=config.Profiles[2].Id;
         ProfileStats Stats(string id,bool[] successes,double ms=100,int gapSeconds=20)
         {
