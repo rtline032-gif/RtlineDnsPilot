@@ -24,7 +24,15 @@ public sealed class DnsShareOffer
 
 public static class DnsSharing
 {
-    private static readonly ChannelProfile[] Baseline = AppConfig.Defaults().Profiles.Concat(BundledChannels.Additions()).ToArray();
+    // Replaced catalog settings remain base configurations in existing installations.
+    private static readonly ChannelProfile[] HistoricalBaseline =
+    [
+        new() { Mode = DnsMode.Doh, Servers = ["181.215.40.49", "31.58.216.201"], DohUrl = "https://dns.bezmezhau.com/dns-query" },
+        new() { Mode = DnsMode.Udp, Servers = ["181.215.40.49", "31.58.216.201"] },
+        new() { Mode = DnsMode.Doh, Servers = ["195.133.25.16"], DohUrl = "https://dns.comss.one/dns-query" },
+        new() { Mode = DnsMode.Doh, Servers = ["83.220.169.155", "212.109.195.93"], DohUrl = "https://dns.comss.one/dns-query" }
+    ];
+    private static readonly ChannelProfile[] Baseline = AppConfig.Defaults().Profiles.Concat(BundledChannels.Additions()).Concat(HistoricalBaseline).ToArray();
     private static readonly string DefaultGptKey = MonitoringTargets.Key(new AppConfig());
 
     public static DnsShareOffer Select(AppConfig config, IEnumerable<ProfileStats> statistics, DateTimeOffset now)

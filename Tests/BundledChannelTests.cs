@@ -15,7 +15,11 @@ public static class BundledChannelTests
             Require(added == 23 && all.Profiles.Count == 26, "Source-checked channel set is incomplete or duplicated.");
             all.Validate();
             Require(all.Profiles.Any(p => p.Mode == DnsMode.Udp && p.Servers.Contains("159.194.200.33")), "The user's GeoHide DNS address was not added.");
-            Require(all.Profiles.Single(p => p.Name == "Comss.one (DoH)").Servers.SequenceEqual(["195.133.25.16"]), "Comss DoH bootstrap does not match the published address.");
+            Require(all.Profiles.Single(p => p.Name == "Comss.one (DoH)").Servers.SequenceEqual(["141.133.184.24", "141.133.183.77"]), "Comss DoH bootstrap does not match the linked official profile.");
+            Require(all.Profiles.Single(p => p.Name == "Comss.one (DoH, резерв)").Servers.SequenceEqual(["109.73.193.146"]), "The separately published Comss router configuration was lost.");
+            Require(all.Profiles.Single(p => p.Name == "Bezmezhau").Servers.SequenceEqual(["143.20.64.55", "31.58.216.201"])
+                && all.Profiles.Single(p => p.Name == "Bezmezhau (UDP/TCP)").Servers.SequenceEqual(["143.20.64.55", "31.58.216.201"]),
+                "Bezmezhau still uses the previous primary or lost its documented secondary.");
             Require(all.Profiles.Single(p => p.Name == "dns.malw.link (DoH)").Servers.SequenceEqual(["179.254.166.171"]), "An unverified secondary server was incorrectly added to DoH.");
             Require(all.Profiles.Count(p => p.Name.StartsWith("MagicDNS", StringComparison.Ordinal)) == 3, "Working MagicDNS variants were not shipped with the catalog.");
             Require(all.Profiles.Single(p => p.Name == "Dagami (DoH, 2026-11)").Servers.SequenceEqual(["48.102.213.179"]), "Current published Dagami bootstrap is missing.");
@@ -69,15 +73,30 @@ public static class BundledChannelTests
                 "Metadata corrections changed saved provider identities, enabled flags, notes or manual/preferred selection.");
             return Task.CompletedTask;
         });
-        await Check("metadata correction does not reopen the accepted 16 November catalog migration", () =>
+        await Check("confirmed provider address changes append four configurations without overwriting the accepted previous catalog", () =>
         {
             var config = new AppConfig { Profiles = BundledChannels.All() };
-            config.Profiles.RemoveAll(p => p.Name.StartsWith("Xbox DNS", StringComparison.Ordinal)
-                || p.Name.StartsWith("Zapret DNS", StringComparison.Ordinal));
+            foreach (var profile in config.Profiles)
+            {
+                if (profile.Name.StartsWith("Bezmezhau", StringComparison.Ordinal)) profile.Servers = ["181.215.40.49", "31.58.216.201"];
+                if (profile.Name == "Comss.one (DoH)") { profile.Servers = ["195.133.25.16"]; profile.Enabled = false; }
+                if (profile.Name == "Comss.one (DoH, резерв)") profile.Servers = ["83.220.169.155", "212.109.195.93"];
+                profile.Note = "Saved user note: " + profile.Name;
+            }
+            config.Profiles.Add(new ChannelProfile { Name = "Custom DNS", Servers = ["8.8.8.8"], Enabled = false });
+            config.ManualProfileId = config.Profiles.Single(p => p.Name == "Bezmezhau").Id;
+            config.ManualUntil = DateTimeOffset.UtcNow.AddMinutes(15);
+            config.PinnedProfileId = config.Profiles.Single(p => p.Name == "Comss.one (DoH, резерв)").Id;
             var before = JsonData.Encode(config);
-            var unchanged = BundledChannels.AddMissing(config, out var added, "2026-11-16");
-            Require(added == 0 && JsonData.Encode(unchanged) == before && BundledChannels.PendingCount(unchanged, "2026-11-16") == 0,
-                "A metadata-only refresh restored profiles deleted after an accepted catalog revision.");
+            var expanded = BundledChannels.AddMissing(config, out var added, "2026-11-16");
+            var retained = JsonData.Clone(expanded); retained.Profiles = retained.Profiles.Take(config.Profiles.Count).ToList();
+            Require(added == 4 && expanded.Profiles.Count == 31 && JsonData.Encode(retained) == before && JsonData.Encode(config) == before,
+                "A provider refresh overwrote old channels, flags, notes, custom data or manual/preferred selection.");
+            Require(expanded.Profiles.Skip(config.Profiles.Count).All(p => !config.Profiles.Any(old => Guid.Parse(old.Id) == Guid.Parse(p.Id)))
+                && BundledChannels.PendingCount(expanded, "2026-11-16") == 0,
+                "Replacement configurations reused an occupied identity or were not fully acknowledged.");
+            var repeated = BundledChannels.AddMissing(expanded, out added, BundledChannels.Revision);
+            Require(added == 0 && JsonData.Encode(repeated) == JsonData.Encode(expanded), "The accepted address refresh was not idempotent.");
             return Task.CompletedTask;
         });
         await Check("a new catalog revision fills all missing profiles while preserving existing channel settings", () =>

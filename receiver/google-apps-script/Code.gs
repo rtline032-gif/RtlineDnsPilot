@@ -28,7 +28,12 @@ const BASE_PROFILES_ = [
   ["Doh",["38.180.241.191"],53,"https://dns.zapret.moe/dns-query"],
   ["Udp",["38.180.241.191"],53,""],
   ["Doh",["172.67.157.232","104.21.82.125"],53,"https://cf.dns-ai.ru/dns-query"],
-  ["Doh",["94.181.44.39"],53,"https://dns.commonnet.work/dns-query"]
+  ["Doh",["94.181.44.39"],53,"https://dns.commonnet.work/dns-query"],
+  // Current catalog settings supplement, rather than replace, historical base fingerprints.
+  ["Doh",["143.20.64.55","31.58.216.201"],53,"https://dns.bezmezhau.com/dns-query"],
+  ["Udp",["143.20.64.55","31.58.216.201"],53,""],
+  ["Doh",["141.133.184.24","141.133.183.77"],53,"https://dns.comss.one/dns-query"],
+  ["Doh",["109.73.193.146"],53,"https://dns.comss.one/dns-query"]
 ];
 
 // Run these owner helpers in the Apps Script editor. None is exposed by doPost/doGet.

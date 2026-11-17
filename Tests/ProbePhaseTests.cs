@@ -86,6 +86,62 @@ public static class ProbePhaseTests
             Require(!result.Success && attempt.Tcp.State == "success" && attempt.Tls.State == "success" && attempt.Http.State == "timeout"
                 && attempt.HttpStatus is null, "A header stall became an earlier connection-phase failure.");
         });
+        await Check("IPv4 TLS failure survives a later IPv6 TCP error in the bounded service and aggregate status", async () =>
+        {
+            using var dns = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+            using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+            var server = Task.Run(async () =>
+            {
+                for (int i = 0; i < 2; i++)
+                {
+                    var query = await dns.ReceiveAsync(stop.Token);
+                    await dns.SendAsync(Answer(query.Buffer, dualStack: true), query.RemoteEndPoint, stop.Token);
+                }
+            });
+            using var transport = new DnsTransport();
+            var probe = new ProfileProbe(transport, (_, addresses, trace) => new HttpClient(new FailureHandler(() =>
+            {
+                trace.TcpStarted();
+                if (addresses[0].AddressFamily == AddressFamily.InterNetwork)
+                {
+                    trace.TcpConnected();
+                    throw new OperationCanceledException("Synthetic TLS deadline.");
+                }
+                throw new HttpRequestException("Synthetic IPv6 route failure.", new SocketException((int)SocketError.NetworkUnreachable));
+            })));
+            var profile = new ChannelProfile { Mode = DnsMode.Udp, Servers = ["127.0.0.1"], DnsPort = ((IPEndPoint)dns.Client.LocalEndPoint!).Port };
+            ProbeResult result;
+            try { result = await probe.CheckAsync(profile, "https://summary.netpilot.invalid/", TimeSpan.FromSeconds(3), stop.Token); }
+            finally { stop.Cancel(); await server; }
+            Require(!result.Success && result.Stage == "https" && result.Diagnostics!.Attempts.Count == 2
+                && result.Detail.StartsWith("IPv4 TLS тайм-аут (192.0.2.10); IPv6 TCP ошибка (2001:db8::10)", StringComparison.Ordinal),
+                "The preceding TLS failure was lost or reachability semantics changed.");
+            var config = AppConfig.Defaults();
+            var service = new ServiceProbeResult { ServiceId = MonitoringTargets.ChatGpt, At = result.At, Stage = result.Stage,
+                Success = result.Success, Detail = result.Detail, Diagnostics = result.Diagnostics };
+            var aggregate = MonitoringTargets.Combine(profile.Id, config, [service]);
+            var stats = new ProfileStats { ProfileId = profile.Id }; stats.Add(aggregate);
+            var projected = StatusProjection.Statistics([stats]).Single().Samples.Single();
+            foreach (var detail in new[] { projected.Detail, projected.Services.Single().Detail })
+                Require(detail.Contains("IPv4 TLS тайм-аут", StringComparison.Ordinal) && detail.Contains("IPv6 TCP ошибка", StringComparison.Ordinal),
+                    "Routine RPC clipping hid one of the observed failure phases.");
+            Require(projected.Diagnostics is null && projected.Services[0].Diagnostics is null,
+                "Short explanations accidentally added full phase arrays to routine status.");
+        });
+        await Check("failure summaries stay bounded and do not guess unobserved phases", () =>
+        {
+            Require(new ProbeDiagnostics().FailureSummary() == ""
+                && new ProbeDiagnostics { Attempts = [new HttpsAttemptDiagnostic { Address = "192.0.2.1", Family = "IPv4", Outcome = "timeout" }] }.FailureSummary() == "",
+                "Missing phase observation was replaced by an invented TCP or TLS diagnosis.");
+            var diagnostics = new ProbeDiagnostics { Attempts = Enumerable.Range(1, 64).Select(i => new HttpsAttemptDiagnostic
+            { Address = "192.0.2." + i, Family = "IPv4", Tcp = new() { State = "timeout" }, Outcome = "timeout" }).ToList() };
+            var before = JsonData.Encode(diagnostics);
+            var summary = diagnostics.FailureSummary();
+            Require(summary.Length <= 128 && summary.Contains("192.0.2.1", StringComparison.Ordinal)
+                && summary.Contains("192.0.2.64", StringComparison.Ordinal) && summary.Contains("62", StringComparison.Ordinal)
+                && JsonData.Encode(diagnostics) == before, "The summary discarded sequence ends, exceeded bounds or changed evidence.");
+            return Task.CompletedTask;
+        });
     }
 
     private static async Task<ProbeResult> TlsFixture(bool stallHeaders)
@@ -139,18 +195,26 @@ public static class ProbePhaseTests
         }
         finally { deadline.Cancel(); await Task.WhenAll(serveDns, serveTls); }
     }
-    private static byte[] Answer(byte[] query)
+    private static byte[] Answer(byte[] query, bool dualStack = false)
     {
-        bool a = query[^3] == 1; var answer = new byte[query.Length + (a ? 16 : 0)]; query.CopyTo(answer, 0);
-        answer[2] = 0x81; answer[3] = 0x80; BinaryPrimitives.WriteUInt16BigEndian(answer.AsSpan(6), a ? (ushort)1 : (ushort)0);
-        if (a)
+        bool a = query[^3] == 1;
+        var address = dualStack ? IPAddress.Parse(a ? "192.0.2.10" : "2001:db8::10") : a ? IPAddress.Loopback : null;
+        var payload = address?.GetAddressBytes();
+        var answer = new byte[query.Length + (payload is null ? 0 : 12 + payload.Length)]; query.CopyTo(answer, 0);
+        answer[2] = 0x81; answer[3] = 0x80; BinaryPrimitives.WriteUInt16BigEndian(answer.AsSpan(6), payload is null ? (ushort)0 : (ushort)1);
+        if (payload is not null)
         {
             var record = answer.AsSpan(query.Length); record[0] = 0xc0; record[1] = 0x0c;
-            BinaryPrimitives.WriteUInt16BigEndian(record[2..], 1); BinaryPrimitives.WriteUInt16BigEndian(record[4..], 1);
-            BinaryPrimitives.WriteUInt32BigEndian(record[6..], 30); BinaryPrimitives.WriteUInt16BigEndian(record[10..], 4);
-            IPAddress.Loopback.GetAddressBytes().CopyTo(record[12..]);
+            BinaryPrimitives.WriteUInt16BigEndian(record[2..], a ? (ushort)1 : (ushort)28); BinaryPrimitives.WriteUInt16BigEndian(record[4..], 1);
+            BinaryPrimitives.WriteUInt32BigEndian(record[6..], 30); BinaryPrimitives.WriteUInt16BigEndian(record[10..], (ushort)payload.Length);
+            payload.CopyTo(record[12..]);
         }
         return answer;
+    }
+    private sealed class FailureHandler(Action fail) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        { fail(); throw new InvalidOperationException("Expected a synthetic failure."); }
     }
     private static SocketsHttpHandler Handler(HttpClient client) => (SocketsHttpHandler)typeof(HttpMessageInvoker)
         .GetField("_handler", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(client)!;

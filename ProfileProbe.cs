@@ -154,6 +154,7 @@ public sealed class ProfileProbe
             else result.HttpsMs = timer.Elapsed.TotalMilliseconds;
             if (ex is OperationCanceledException) { result.Stage = "timeout"; result.Detail = "Истёк общий срок проверки публичного HTTPS."; }
             else result.Detail = (result.Stage == "dns" ? "Ошибка DNS: " : "Ошибка HTTPS/TLS: ") + DnsTransport.DescribeFailure(ex);
+            if (result.Diagnostics?.FailureSummary() is { Length: > 0 } summary) result.Detail = summary + ". " + result.Detail;
             return result;
         }
     }

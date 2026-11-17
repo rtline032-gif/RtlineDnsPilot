@@ -71,6 +71,23 @@ public sealed class ProbeDiagnostics
         if (maximum > 0 && char.IsHighSurrogate(value[maximum - 1])) maximum--;
         return value[..maximum];
     }
+    internal string FailureSummary()
+    {
+        // Keep both ends of the observed sequence ahead of the verbose exception chain.
+        // The bounded ordinary service status must not hide IPv4 TLS behind a final IPv6 TCP error.
+        var failures = BoundedCopy().Attempts.Select(attempt =>
+        {
+            var (name, phase) = attempt.Http.State is "error" or "timeout" ? ("HTTP", attempt.Http)
+                : attempt.Tls.State is "error" or "timeout" ? ("TLS", attempt.Tls) : ("TCP", attempt.Tcp);
+            if (phase.State is not ("error" or "timeout") || attempt.Family == "?" || attempt.Address == "?") return "";
+            return attempt.Family + " " + name + (phase.State == "timeout" ? " тайм-аут" : " ошибка") + " (" + attempt.Address + ")";
+        }).Where(text => text.Length > 0).ToArray();
+        if (failures.Length == 0) return "";
+        var summary = failures[0];
+        if (failures.Length > 1) summary += "; " + failures[^1];
+        if (failures.Length > 2) summary += "; ещё " + (failures.Length - 2) + " попыток — в диагностике";
+        return Clip(summary, 128);
+    }
     public static string Format(ProbeDiagnostics value)
     {
         var data = value.BoundedCopy();

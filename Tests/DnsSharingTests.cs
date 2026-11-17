@@ -27,6 +27,25 @@ public static class DnsSharingTests
                 Require(DnsSharing.Select(c,[Stats(c,Sample(c))],now).Profiles.Count==0,"Built-in escaped by ID/name/address order: "+p.Name);
             }
         });
+        Check("sharing retains replaced Bezmezhau and Comss base settings without excluding different endpoints",()=>
+        {
+            ChannelProfile[] historical =
+            [
+                new() { Mode=DnsMode.Doh, Servers=["181.215.40.49","31.58.216.201"], DohUrl="https://dns.bezmezhau.com/dns-query" },
+                new() { Mode=DnsMode.Udp, Servers=["181.215.40.49","31.58.216.201"] },
+                new() { Mode=DnsMode.Doh, Servers=["195.133.25.16"], DohUrl="https://dns.comss.one/dns-query" },
+                new() { Mode=DnsMode.Doh, Servers=["83.220.169.155","212.109.195.93"], DohUrl="https://dns.comss.one/dns-query" }
+            ];
+            foreach(var profile in historical)
+            {
+                var c=Config();c.Profiles=[JsonData.Clone(profile)];c.Profiles[0].Name="Renamed historical base";
+                c.Profiles[0].Servers=c.Profiles[0].Servers.AsEnumerable().Reverse().ToArray();
+                Require(DnsSharing.Select(c,[Stats(c,Sample(c))],now).Profiles.Count==0,"A replaced base configuration became eligible after the catalog update.");
+                if(c.Profiles[0].Mode==DnsMode.Doh)c.Profiles[0].DohUrl+="-custom";
+                else c.Profiles[0].DnsPort=5353;
+                Require(DnsSharing.Select(c,[Stats(c,Sample(c))],now).Profiles.Count==1,"A different endpoint was excluded solely by its historical server addresses.");
+            }
+        });
         Check("sharing sends only public configuration and worked official sites",()=>
         {
             var c=Config();var sample=Sample(c,false); sample.Services.Add(new() {ServiceId=MonitoringTargets.Gemini,At=now,Success=true,Detail="PRIVATE detail",CountryCode="NL"});
