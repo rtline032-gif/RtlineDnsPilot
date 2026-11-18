@@ -40,11 +40,47 @@ public static class ApplicationUpdateUiTests
                 var activity=(ToolStripStatusLabel)typeof(MainForm).GetField("_activity",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(form)!;
                 Require(handler.Requests==1 && service.Installations==1 && service.Version==AppVersion.Current,"An already-new GUI left its older installed service unchanged.");
                 Require(activity.Text.Contains("служба обновлена",StringComparison.Ordinal),"The single update action did not report the service result.");
+                var description=(Label)typeof(MainForm).GetField("_description",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(form)!;
+                Require(description.Text.Contains("программа "+AppVersion.Current,StringComparison.Ordinal)
+                    && description.Text.Contains("служба "+AppVersion.Current,StringComparison.Ordinal),"The running GUI and service versions are not visible together.");
                 Require(File.ReadAllText(configPath)==original,"Service-only updating reset the user's channel configuration.");
             },withOldService:true);
             report("application update action also upgrades an older service when the GUI is already current",true,"");
         }
         catch(Exception ex) {report("application update action also upgrades an older service when the GUI is already current",false,ex.Message);}
+        try
+        {
+            await OnUiThread(async (form,handler,configPath,original,service)=>
+            {
+                handler.Status=HttpStatusCode.ServiceUnavailable;
+                var method=typeof(MainForm).GetMethod("UpdateApplicationAsync",BindingFlags.NonPublic|BindingFlags.Instance)!;
+                await (Task)method.Invoke(form,null)!;
+                var activity=(ToolStripStatusLabel)typeof(MainForm).GetField("_activity",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(form)!;
+                Require(handler.Requests==1 && service.Installations==1 && service.Version==AppVersion.Current,"GitHub failure prevented updating the installed service from the current package.");
+                Require(activity.Text.Contains("Служба обновлена до "+AppVersion.Current,StringComparison.Ordinal)
+                    && activity.Text.Contains("не проверены",StringComparison.Ordinal),"Offline repair claimed a successful check for new application versions.");
+                Require(File.ReadAllText(configPath)==original,"Offline service repair reset the saved channels.");
+            },withOldService:true);
+            report("GitHub failure does not block service upgrading from the current application",true,"");
+        }
+        catch(Exception ex) {report("GitHub failure does not block service upgrading from the current application",false,ex.Message);}
+        try
+        {
+            await OnUiThread(async (form,handler,configPath,original,service)=>
+            {
+                service.Version=AppVersion.Current; service.Managed=true;
+                var backend=(UiBackend)typeof(MainForm).GetField("_backend",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(form)!;
+                var view=typeof(MainForm).GetMethod("UpdateView",BindingFlags.NonPublic|BindingFlags.Instance)!;
+                await backend.RefreshAsync(); view.Invoke(form,null);
+                var updateService=(Button)typeof(MainForm).GetField("_updateService",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(form)!;
+                Require(!updateService.Visible && !backend.ServiceNeedsUpdate,"Current managed service was offered as outdated.");
+                await backend.RestoreAsync(); view.Invoke(form,null);
+                Require(!updateService.Visible && !backend.ServiceNeedsUpdate && !backend.Status.SystemDnsManaged,"Disabling management made the same current service appear outdated.");
+                Require(handler.Requests==0 && service.Installations==0,"Stopping DNS management checked GitHub or reinstalled a current service.");
+            },withOldService:true);
+            report("disabling DNS management does not offer an update for the same current service",true,"");
+        }
+        catch(Exception ex) {report("disabling DNS management does not offer an update for the same current service",false,ex.Message);}
     }
 
     private static Task OnUiThread(Func<MainForm,Handler,string,string,Connection,Task> check,bool withOldService=false)
@@ -97,22 +133,25 @@ public static class ApplicationUpdateUiTests
     private sealed class Handler:HttpMessageHandler
     {
         public int Requests {get;private set;}
+        public HttpStatusCode Status {get;set;}=HttpStatusCode.OK;
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken token)
         {
             Requests++;
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) {Content=new StringContent("[]",Encoding.UTF8,"application/json")});
+            return Task.FromResult(new HttpResponseMessage(Status) {Content=new StringContent("[]",Encoding.UTF8,"application/json")});
         }
     }
     private sealed class Connection(AppConfig config,bool installed):IUiServiceConnection
     {
         public bool IsInstalled=>installed;
-        public string Version {get;private set;}="0.1.9";
+        public string Version {get;set;}="0.1.9";
+        public bool Managed {get;set;}
         public int Installations {get;private set;}
         public Task<RpcReply> SendAsync(RpcRequest request,CancellationToken token)
         {
             if(!installed) throw new IOException("No service in isolated UI test.");
-            if(request.Command!="status") throw new InvalidOperationException("Unexpected service mutation in UI test.");
-            return Task.FromResult(new RpcReply {Ok=true,Status=new AppStatus {Config=JsonData.Clone(config),ServiceVersion=Version,ServiceConnected=true,Monitoring=false,SystemDnsManaged=false}});
+            if(request.Command=="disable") Managed=false;
+            else if(request.Command!="status") throw new InvalidOperationException("Unexpected service mutation in UI test.");
+            return Task.FromResult(new RpcReply {Ok=true,Status=new AppStatus {Config=JsonData.Clone(config),ServiceVersion=Version,ServiceConnected=true,Monitoring=false,SystemDnsManaged=Managed}});
         }
         public Task InstallAsync() {Installations++;Version=AppVersion.Current;return Task.CompletedTask;}
         public Task RecoverAsync()=>throw new InvalidOperationException("DNS recovery is forbidden in UI tests.");

@@ -733,6 +733,9 @@ public sealed class MainForm : Form
                 : status.Monitoring ? "RtlineDnsPilot проверяет DNS и доступность HTTPS через каждый канал. Системные сетевые настройки в этом режиме не применяются."
                 : "Автоматические проверки остановлены. Доступны запуск наблюдения и разовая проверка; системные сетевые настройки не применяются.";
         }
+        _description.Text += "\r\nВерсии: программа " + AppVersion.Current + " · служба " + (_backend.ServiceConnected
+            ? Version.TryParse(status.ServiceVersion,out var serviceVersion) ? serviceVersion.ToString() : "версия неизвестна"
+            : _backend.ServiceInstalled ? "версия не подтверждена" : "не установлена");
         var messages = new List<string>();
         if(!string.IsNullOrWhiteSpace(_startupUpdateWarning)) messages.Add(_startupUpdateWarning);
         if (status.AllUnavailable && status.Config.Profiles.Any(p => p.Enabled)) messages.Add("Все включённые каналы недоступны по последним проверкам. " + (status.Monitoring ? "Проверки продолжаются." : "Проверки сейчас на паузе."));
@@ -1438,7 +1441,17 @@ public sealed class MainForm : Form
             if(_settingsDirty)
                 throw new InvalidOperationException("Есть несохранённые настройки. Сначала нажмите «Применить настройки» на вкладке «Проверка и сеть», затем повторите обновление программы.");
             _activity.Text="Проверка новых версий на GitHub…";
-            var release=await _applicationUpdates.CheckAsync(Version.Parse(AppVersion.Current));
+            ApplicationRelease? release;
+            try { release=await _applicationUpdates.CheckAsync(Version.Parse(AppVersion.Current)); }
+            catch(Exception ex) when(_backend.ServiceUpdateAvailable && ex is HttpRequestException or TimeoutException)
+            {
+                _activity.Text="GitHub недоступен. Обновление службы из текущей программы…";
+                await _backend.UpdateServiceAsync();
+                _startupUpdateWarning=null;
+                _updateFeedback="Служба обновлена до "+_backend.Status.ServiceVersion+" из текущей программы · управление DNS выключено. Новые версии на GitHub не проверены: "+ex.Message;
+                AddUiEvent(_updateFeedback,"warning");
+                return;
+            }
             if(release is null)
             {
                 if(_backend.ServiceUpdateAvailable)
@@ -1446,7 +1459,7 @@ public sealed class MainForm : Form
                     _activity.Text="Программа актуальна. Обновление установленной службы…";
                     await _backend.UpdateServiceAsync();
                     _startupUpdateWarning=null;
-                    _updateFeedback="Программа "+AppVersion.Current+" актуальна · служба обновлена · управление DNS выключено";
+                    _updateFeedback="Программа "+AppVersion.Current+" актуальна · служба обновлена до "+_backend.Status.ServiceVersion+" · управление DNS выключено";
                 }
                 else _updateFeedback="Новых версий нет · установлена "+AppVersion.Current;
                 AddUiEvent(_updateFeedback,"update");

@@ -1,6 +1,6 @@
 {
-  "version": "0.1.19",
-  "title": "RtlineDnsPilot 0.1.19 — обновлённые DNS и точные причины отказа",
-  "notes": "release-notes-0.1.19.md",
+  "version": "0.1.20",
+  "title": "RtlineDnsPilot 0.1.20 — проверка обновления службы",
+  "notes": "release-notes-0.1.20.md",
   "prerelease": true
 }

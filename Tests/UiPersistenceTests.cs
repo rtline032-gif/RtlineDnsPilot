@@ -209,6 +209,42 @@ public static class UiPersistenceTests
             Require(backend.Status.Config.Profiles.Count == 4 && backend.PendingServiceConfiguration && !backend.ServiceNeedsUpdate, "Service update hid local channels or failed to report the new version.");
         });
 
+        await Check("service update rejects an old or unverified process instead of reporting success", async dir =>
+        {
+            foreach (var version in new[] { "0.1.0", "", "unverified" })
+            {
+                var config = Defaults();
+                var service = new FakeService { State = new AppStatus { Config = config, ServiceVersion = version }, KeepInstalledVersion = true };
+                await using var backend = new UiBackend(Path.Combine(dir, Guid.NewGuid().ToString("N")), service);
+                try { await backend.UpdateServiceAsync(); throw new Exception("An unchanged service was reported as updated."); }
+                catch (IOException ex)
+                {
+                    Require(ex.Message.Contains(AppVersion.Current, StringComparison.Ordinal), "Failure did not identify the expected service version.");
+                }
+                Require(service.InstallCalls == 1 && service.Commands.All(c => c == "status") && backend.ServiceNeedsUpdate,
+                    "A failed version check mutated DNS or hid the old service.");
+            }
+        });
+
+        await Check("enable never configures or activates a process that stayed old after installation", async dir =>
+        {
+            var config = Defaults(); config.AdapterId = Guid.NewGuid().ToString("D"); config.Profiles[0].Enabled = true;
+            var service = new FakeService { State = new AppStatus { Config = config, ServiceVersion = "0.1.0" }, KeepInstalledVersion = true };
+            await using var backend = new UiBackend(dir, service);
+            await backend.RefreshAsync();
+            try { await backend.EnableManagementAsync(config); throw new Exception("An old service was allowed to enable DNS."); }
+            catch (IOException) { }
+            Require(service.InstallCalls == 1 && service.Commands.All(c => c == "status"), "Version mismatch sent configure or enable to the old service.");
+        });
+
+        await Check("service update accepts the expected four-component process version", async dir =>
+        {
+            var service = new FakeService { State = new AppStatus { Config = Defaults(), ServiceVersion = AppVersion.Current + ".0" }, KeepInstalledVersion = true };
+            await using var backend = new UiBackend(dir, service);
+            await backend.UpdateServiceAsync();
+            Require(!backend.ServiceNeedsUpdate && service.Commands.All(c => c == "status"), "Equivalent process version was rejected or caused a DNS action.");
+        });
+
         await Check("an idempotent explicit service update also ends in observation mode", async dir =>
         {
             var config = Defaults(); config.ManagementRequested = true;
@@ -226,10 +262,11 @@ public static class UiPersistenceTests
         public AppStatus State { get; set; } = new();
         public bool FailConfigure { get; set; }
         public bool CommitBeforeFailure { get; set; }
+        public bool KeepInstalledVersion { get; set; }
         public int ConfigurationCalls { get; private set; }
         public int InstallCalls { get; private set; }
         public List<string> Commands { get; } = [];
-        public Task InstallAsync() { InstallCalls++; State.ServiceVersion = AppVersion.Current; return Task.CompletedTask; }
+        public Task InstallAsync() { InstallCalls++; if (!KeepInstalledVersion) State.ServiceVersion = AppVersion.Current; return Task.CompletedTask; }
         public Task RecoverAsync() => Task.CompletedTask;
         public Task<RpcReply> SendAsync(RpcRequest request, CancellationToken token)
         {

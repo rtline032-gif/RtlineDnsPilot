@@ -33,18 +33,7 @@ public static class ServiceClient
         catch(EndOfStreamException ex)
         { throw new IOException("Служба оборвала соединение до полного ответа. Команда повторно не отправлялась; её результат нужно проверить по состоянию службы.",ex); }
     }
-    public static async Task InstallAsync()
-    {
-        var sid=WindowsIdentity.GetCurrent().User?.Value ?? throw new InvalidOperationException("Не определён пользователь Windows.");
-        await RunElevatedAsync("--install-service","--repair-service","--owner-sid",sid);
-        for(int i=0;i<20;i++)
-        {
-            try { var result=await SendAsync(new RpcRequest()); if(result.Ok) return; }
-            catch(Exception ex) when(ex is IOException or TimeoutException or OperationCanceledException) { }
-            await Task.Delay(500);
-        }
-        throw new InvalidOperationException("Служба не отвечает. Проверьте service.log в ProgramData\\NetPilot.");
-    }
+    public static Task InstallAsync()=>InstallPackageAsync(AppContext.BaseDirectory);
     public static Task UninstallAsync()=>RunElevatedAsync("--uninstall-service");
     internal static async Task InstallPackageAsync(string directory,CancellationToken token=default)
     {
@@ -63,15 +52,18 @@ public static class ServiceClient
             try
             {
                 var reply=await SendAsync(new RpcRequest {Command="status"});
-                if(reply.Ok && reply.Status is { } status && Version.TryParse(status.ServiceVersion,out var actual)
-                    && new Version(actual.Major,actual.Minor,Math.Max(0,actual.Build),Math.Max(0,actual.Revision))==version
+                if(reply.Ok && reply.Status is { } status && HasExpectedVersion(status,version)
                     && !status.SystemDnsManaged && !status.DnsRecoveryPending && !status.Config.ManagementRequested) return;
             }
             catch(Exception ex) when(ex is IOException or TimeoutException or OperationCanceledException) { }
             await Task.Delay(500);
         }
-        throw new IOException("После обновления не подтверждены версия службы и восстановление DNS. Окно прежней версии будет сохранено.");
+        throw new IOException("После обновления не подтверждены версия службы " + packageVersion + " и восстановление DNS. Обновление службы не считается завершённым.");
     }
+    internal static bool HasExpectedVersion(AppStatus status,Version expected)
+        => Version.TryParse(status.ServiceVersion,out var actual)
+            && new Version(actual.Major,actual.Minor,Math.Max(0,actual.Build),Math.Max(0,actual.Revision))
+                ==new Version(expected.Major,expected.Minor,Math.Max(0,expected.Build),Math.Max(0,expected.Revision));
     public static Task RecoverAsync()=>RunElevatedAsync("--restore-dns");
     public static Task ResetAutomaticAsync(string adapterId)
     {

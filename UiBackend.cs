@@ -443,12 +443,7 @@ public sealed class UiBackend : IAsyncDisposable
             StageConfiguration(config);
             if (!_connected || ServiceNeedsUpdate)
             {
-                await _service.InstallAsync();
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                var reply = await _service.SendAsync(new RpcRequest { Command = "status" }, timeout.Token);
-                if (!reply.Ok || reply.Status is null)
-                    throw new InvalidOperationException(reply.Error ?? "Служба установлена, но не отвечает. Управление DNS не подтверждено.");
-                await AdoptServiceAsync(reply.Status);
+                await InstallAndConfirmServiceAsync();
             }
             // An already-running service may have an active transaction. Keep its authoritative state.
             if (Status.SystemDnsManaged) return;
@@ -467,17 +462,27 @@ public sealed class UiBackend : IAsyncDisposable
         try
         {
             if (!_service.IsInstalled) throw new InvalidOperationException("Служба ещё не установлена. Используйте «Включить управление DNS».");
-            await _service.InstallAsync();
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            var reply = await _service.SendAsync(new RpcRequest { Command = "status" }, timeout.Token);
-            if (!reply.Ok || reply.Status is null) throw new InvalidOperationException(reply.Error ?? "После обновления служба не вернула состояние. Состояние DNS нужно проверить.");
-            await AdoptServiceAsync(reply.Status);
+            await InstallAndConfirmServiceAsync();
             // A retry from an already current package may need no binary replacement.
             // Honor this action's promise to finish in observation mode in that case too.
             if (Status.SystemDnsManaged || Status.DnsRecoveryPending || Status.Config.ManagementRequested)
                 await CommandAsync(new RpcRequest { Command = "disable" });
         }
         finally { _gate.Release(); }
+    }
+
+    private async Task InstallAndConfirmServiceAsync()
+    {
+        await _service.InstallAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var reply = await _service.SendAsync(new RpcRequest { Command = "status" }, timeout.Token);
+        if (!reply.Ok || reply.Status is null)
+            throw new IOException(reply.Error ?? "После обновления служба не вернула состояние. Версия и состояние DNS не подтверждены.");
+        await AdoptServiceAsync(reply.Status);
+        if (!ServiceClient.HasExpectedVersion(reply.Status,Version.Parse(AppVersion.Current)))
+            throw new IOException("Обновление службы не подтверждено: ожидалась версия " + AppVersion.Current
+                + ", ответила " + (Version.TryParse(reply.Status.ServiceVersion,out var actual) ? actual.ToString() : "неизвестная версия")
+                + ". Повторите «Обновить службу»; управление DNS не включалось этим действием.");
     }
 
     public async Task RestoreAsync()
