@@ -17,6 +17,9 @@ public static class CoreTests
         if(args.Contains("--rpc-only")) { await RpcTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--transactions-only")) { await TransactionTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--dns-recovery-only")) { await TransactionTests.RunAsync(Report); await DnsRecoveryCommandTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--relay-recovery-only")) { await RelayRecoveryTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--relay-diagnostics-only")) { await RelayDiagnosticsTests.RunAsync(Report); await RelayDiagnosticsUiTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--probe-scope-ui-only")) { await ProbeScopeUiTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--application-update-only")) { await ApplicationUpdateClientTests.RunAsync(Report); await ApplicationUpdateLauncherTests.RunAsync(Report); await ApplicationUpdateUiTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--ui-sync-only")) { await UiPersistenceTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--import-only")) { ProfileImportTests.Run(Report); await UiPersistenceTests.RunAsync(Report); return failures==0?0:1; }
@@ -25,6 +28,7 @@ public static class CoreTests
         if(args.Contains("--reconnect-applications-only")) { ApplicationConnectionResetTests.Run(Report); await ApplicationReconnectLauncherTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--probe-diagnostics-only")) { await ProbeDiagnosticsTests.RunAsync(Report); await ProbePhaseTests.RunAsync(Report); await ProbeDiagnosticsUiTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--monitoring-only")) { await MonitoringTests.RunAsync(Report); return failures==0?0:1; }
+        if(args.Contains("--probe-cadence-only")) { await ProbeCadenceTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--manual-only")) { await ManualSelectionTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--automatic-dns-only")) { await AutomaticDnsTests.RunAsync(Report); return failures==0?0:1; }
         if(args.Contains("--monitoring-control-only")) { await MonitoringControlTests.RunAsync(Report); return failures==0?0:1; }
@@ -43,6 +47,10 @@ public static class CoreTests
         await DnsRecoveryCommandTests.RunAsync(Report);
         await ProtocolTests.RunAsync(Report);
         await EngineTests.RunAsync(Report);
+        await RelayRecoveryTests.RunAsync(Report);
+        await RelayDiagnosticsTests.RunAsync(Report);
+        await RelayDiagnosticsUiTests.RunAsync(Report);
+        await ProbeScopeUiTests.RunAsync(Report);
         InstallSafetyTests.Run(Report);
         await RpcTests.RunAsync(Report);
         ProfileConfigurationTests.Run(Report);
@@ -58,6 +66,7 @@ public static class CoreTests
         ServiceUpgradeTests.Run(Report);
         await BundledChannelTests.RunAsync(Report);
         await MonitoringTests.RunAsync(Report);
+        await ProbeCadenceTests.RunAsync(Report);
         await ManualSelectionTests.RunAsync(Report);
         await AutomaticDnsTests.RunAsync(Report);
         BrandingUpgradeTests.Run(Report);

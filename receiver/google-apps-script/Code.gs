@@ -33,7 +33,13 @@ const BASE_PROFILES_ = [
   ["Doh",["143.20.64.55","31.58.216.201"],53,"https://dns.bezmezhau.com/dns-query"],
   ["Udp",["143.20.64.55","31.58.216.201"],53,""],
   ["Doh",["141.133.184.24","141.133.183.77"],53,"https://dns.comss.one/dns-query"],
-  ["Doh",["109.73.193.146"],53,"https://dns.comss.one/dns-query"]
+  ["Doh",["109.73.193.146"],53,"https://dns.comss.one/dns-query"],
+  ["Doh",["31.31.207.68"],53,"https://d.webshiftvpn.ru/dns-query"],
+  ["Udp",["2.58.127.63"],53,""],
+  ["Udp",["164.5.224.81"],53,""],
+  ["Doh",["194.87.196.13"],53,"https://dns.dns-ai.ru/dns-query"],
+  ["Udp",["5.175.161.3","37.221.93.128"],53,""],
+  ["Udp",["192.255.159.240"],53,""]
 ];
 
 // Run these owner helpers in the Apps Script editor. None is exposed by doPost/doGet.

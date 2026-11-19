@@ -20,6 +20,13 @@ internal static class Program
                     MessageBoxButtons.OK, result.Failed > 0 || result.SkippedIpv6 > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
                 return ApplicationReconnectLauncher.ResultCode(result);
             }
+            if(args.Contains("--rollback-service"))
+            {
+                if(args.Length != 5 || args[0] != "--rollback-service" || args[1] != "--previous-version" || args[3] != "--owner-sid")
+                    throw new ArgumentException("Неверные параметры помощника отката службы.");
+                try { ServiceInstaller.RollbackAsync(args[4], args[2]).GetAwaiter().GetResult(); return 0; }
+                catch(ServiceRollbackNotRequiredException) { return 10; }
+            }
             if(args.Contains("--service")) return NativeServiceHost.Run();
             if(args.Contains("--install-service")) { ServiceInstaller.InstallAsync(Value("--owner-sid")??throw new ArgumentException("Не указан SID пользователя."),forceRestart:args.Contains("--repair-service")).GetAwaiter().GetResult(); return 0; }
             if(args.Contains("--uninstall-service")) { ServiceInstaller.RestoreAsync(true).GetAwaiter().GetResult(); return 0; }
@@ -47,23 +54,29 @@ internal static class Program
                 else smoke.RenderSmoke(path);
                 return 0;
             }
-            if(args.Contains("--complete-application-update"))
+            bool rollback = args.Contains("--complete-application-rollback");
+            if(rollback || args.Contains("--complete-application-update"))
             {
-                using var updater=new ApplicationUpdateProgressForm(Value("--complete-application-update")??throw new ArgumentException("Не задано задание обновления."));
+                using var updater=new ApplicationUpdateProgressForm(
+                    Value(rollback?"--complete-application-rollback":"--complete-application-update")
+                        ??throw new ArgumentException("Не задано задание помощника программы."), rollback);
                 Application.Run(updater);
                 return updater.ExitCode;
             }
             var launcher=new ApplicationUpdateLauncher();
             string? warning=Value("--update-warning");
             var startupAck=Value("--update-startup-ack");
+            string dataDirectory=Value("--data-dir")??AppPaths.LocalData;
             if(startupAck is null && !args.Contains("--skip-update-route"))
             {
                 if(launcher.TryLaunchCurrent(args,out var routeWarning)) return 0;
                 warning??=routeWarning;
+                if(launcher.TryLaunchRollback(args,dataDirectory,out var rollbackWarning)) return 0;
+                warning??=rollbackWarning;
             }
             using var mutex=new Mutex(true,@"Local\NetPilot.Ui."+System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value,out bool first);
             if(!first) { MessageBox.Show("RtlineDnsPilot уже открыт. Найдите значок в области уведомлений.","RtlineDnsPilot"); return 0; }
-            using var form=new MainForm(Value("--data-dir")??AppPaths.LocalData);
+            using var form=new MainForm(dataDirectory);
             if(warning is not null) form.ShowUpdateWarning(warning);
             if(startupAck is not null) form.Shown+=(_,_)=>
             {

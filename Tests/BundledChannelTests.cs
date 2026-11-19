@@ -12,7 +12,7 @@ public static class BundledChannelTests
         await Check("published supplemental channels validate without duplicate settings", () =>
         {
             var all = BundledChannels.AddMissing(AppConfig.Defaults(), out int added);
-            Require(added == 23 && all.Profiles.Count == 26, "Source-checked channel set is incomplete or duplicated.");
+            Require(added == 29 && all.Profiles.Count == 32, "Source-checked channel set is incomplete or duplicated.");
             all.Validate();
             Require(all.Profiles.Any(p => p.Mode == DnsMode.Udp && p.Servers.Contains("159.194.200.33")), "The user's GeoHide DNS address was not added.");
             Require(all.Profiles.Single(p => p.Name == "Comss.one (DoH)").Servers.SequenceEqual(["141.133.184.24", "141.133.183.77"]), "Comss DoH bootstrap does not match the linked official profile.");
@@ -69,13 +69,13 @@ public static class BundledChannelTests
             var before = JsonData.Encode(config);
             var expanded = BundledChannels.AddMissing(config, out var added, BundledChannels.PreviousRevision);
             var retained = JsonData.Clone(expanded); retained.Profiles = retained.Profiles.Take(config.Profiles.Count).ToList();
-            Require(added == 20 && expanded.Profiles.Count == 26 && JsonData.Encode(retained) == before && JsonData.Encode(config) == before,
+            Require(added == 26 && expanded.Profiles.Count == 32 && JsonData.Encode(retained) == before && JsonData.Encode(config) == before,
                 "Metadata corrections changed saved provider identities, enabled flags, notes or manual/preferred selection.");
             return Task.CompletedTask;
         });
-        await Check("confirmed provider address changes append four configurations without overwriting the accepted previous catalog", () =>
+        await Check("the catalog keeps older provider variants and reports pending additions at capacity", () =>
         {
-            var config = new AppConfig { Profiles = BundledChannels.All() };
+            var config = new AppConfig { Profiles = BundledChannels.All().Take(26).ToList() };
             foreach (var profile in config.Profiles)
             {
                 if (profile.Name.StartsWith("Bezmezhau", StringComparison.Ordinal)) profile.Servers = ["181.215.40.49", "31.58.216.201"];
@@ -90,26 +90,26 @@ public static class BundledChannelTests
             var before = JsonData.Encode(config);
             var expanded = BundledChannels.AddMissing(config, out var added, "2026-11-16");
             var retained = JsonData.Clone(expanded); retained.Profiles = retained.Profiles.Take(config.Profiles.Count).ToList();
-            Require(added == 4 && expanded.Profiles.Count == 31 && JsonData.Encode(retained) == before && JsonData.Encode(config) == before,
+            Require(added == 5 && expanded.Profiles.Count == 32 && JsonData.Encode(retained) == before && JsonData.Encode(config) == before,
                 "A provider refresh overwrote old channels, flags, notes, custom data or manual/preferred selection.");
             Require(expanded.Profiles.Skip(config.Profiles.Count).All(p => !config.Profiles.Any(old => Guid.Parse(old.Id) == Guid.Parse(p.Id)))
-                && BundledChannels.PendingCount(expanded, "2026-11-16") == 0,
-                "Replacement configurations reused an occupied identity or were not fully acknowledged.");
-            var repeated = BundledChannels.AddMissing(expanded, out added, BundledChannels.Revision);
-            Require(added == 0 && JsonData.Encode(repeated) == JsonData.Encode(expanded), "The accepted address refresh was not idempotent.");
+                && BundledChannels.PendingCount(expanded, "2026-11-16") == 5,
+                "Replacement configurations reused an occupied identity or missing additions were hidden.");
+            var repeated = BundledChannels.AddMissing(expanded, out added, "2026-11-16");
+            Require(added == 0 && JsonData.Encode(repeated) == JsonData.Encode(expanded), "Retrying a full list modified the saved profiles.");
             return Task.CompletedTask;
         });
         await Check("a new catalog revision fills all missing profiles while preserving existing channel settings", () =>
         {
-            var config = new AppConfig { Profiles = BundledChannels.All().Take(15).ToList() };
+            var config = new AppConfig { Profiles = BundledChannels.All().Take(26).ToList() };
             var deleted = config.Profiles.Last(); config.Profiles.Remove(deleted);
             config.Profiles[0].Enabled = false; config.Profiles[0].Note = "User note";
             config.PinnedProfileId = config.ManualProfileId = config.Profiles[1].Id;
             config.ManualUntil = DateTimeOffset.UtcNow.AddHours(1);
             var before = JsonData.Encode(config);
             var all = BundledChannels.AddMissing(config, out var added, BundledChannels.PreviousRevision);
-            Require(added == 12 && all.Profiles.Count == 26 && all.Profiles.Any(p => AppConfig.SameEffectiveConfiguration(p, deleted)),
-                "An older explicit deletion returned or a new provider was missed.");
+            Require(added == 7 && all.Profiles.Count == 32 && all.Profiles.Any(p => AppConfig.SameEffectiveConfiguration(p, deleted)),
+                "An older missing channel or one of the six test configurations was not added.");
             var settings = JsonData.Clone(all); settings.Profiles = settings.Profiles.Take(config.Profiles.Count).ToList();
             Require(JsonData.Encode(settings) == before && JsonData.Encode(config) == before,
                 "A catalog update altered existing identities, flags, notes or manual selection.");
@@ -166,7 +166,7 @@ public static class BundledChannelTests
             var all = BundledChannels.AddMissing(config, out var added, BundledChannels.PreviousRevision);
             Require(added == 0 && all.Profiles.Count == 32 && JsonData.Encode(all) == before && JsonData.Encode(config) == before,
                 "The capacity limit displaced or modified an existing channel.");
-            Require(BundledChannels.PendingCount(all, BundledChannels.PreviousRevision) == 26, "Missing catalog profiles were silently lost at capacity.");
+            Require(BundledChannels.PendingCount(all, BundledChannels.PreviousRevision) == 32, "Missing catalog profiles were silently lost at capacity.");
             return Task.CompletedTask;
         });
         await Check("a nearly full database appends only available slots and leaves the remaining delta pending", () =>
@@ -177,7 +177,7 @@ public static class BundledChannelTests
             var all = BundledChannels.AddMissing(config, out var added, BundledChannels.PreviousRevision);
             Require(added == 1 && all.Profiles.Count == 32 && JsonData.Encode(all.Profiles.Take(31).ToList()) == before,
                 "A partial capacity merge dropped an existing configuration.");
-            Require(BundledChannels.PendingCount(all, BundledChannels.PreviousRevision) == 25, "A partial merge hid the unadded configurations.");
+            Require(BundledChannels.PendingCount(all, BundledChannels.PreviousRevision) == 31, "A partial merge hid the unadded configurations.");
             return Task.CompletedTask;
         });
         await Check("catalog getters do not share mutable profile arrays", () =>
@@ -197,27 +197,39 @@ public static class BundledChannelTests
             string deleted;
             await using (var backend = new UiBackend(directory, service, includeBundledChannels: true))
             {
-                Require(backend.Status.Config.Profiles.Count == 26, "The migration was not loaded into the window.");
+                Require(backend.Status.Config.Profiles.Count == 32, "The migration was not loaded into the window.");
                 var edited = JsonData.Clone(backend.Status.Config);
                 deleted = edited.Profiles.Last().Id; edited.Profiles.RemoveAt(edited.Profiles.Count - 1);
                 foreach (var p in edited.Profiles) p.Enabled = false;
                 await backend.ConfigureAsync(edited);
             }
             await using var reopened = new UiBackend(directory, service, includeBundledChannels: true);
-            Require(reopened.Status.Config.Profiles.Count == 25 && reopened.Status.Config.Profiles.All(p => p.Id != deleted), "The migration silently undid an explicit deletion.");
+            Require(reopened.Status.Config.Profiles.Count == 31 && reopened.Status.Config.Profiles.All(p => p.Id != deleted), "The migration silently undid an explicit deletion.");
         });
-        await Check("catalog migration also preserves channels that exist only in the service database", async () =>
+        await Check("catalog migration reserves room for saved service channels before filling the window", async () =>
         {
             var directory = Path.Combine(AppContext.BaseDirectory, "test-data", "catalog-merge-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
             var local = AppConfig.Defaults();
+            int catalogCount = BundledChannels.All().Count;
+            int localOnlyCount = Math.Max(1, 32 - catalogCount);
+            for (int i = 1; i <= localOnlyCount; i++)
+                local.Profiles.Add(new ChannelProfile { Name = "Saved local DNS " + i, Servers = ["198.51.100." + i] });
             AtomicStore.Write(Path.Combine(directory, "ui-config.json"), local);
             var remote = AppConfig.Defaults();
-            remote.Profiles.Add(new ChannelProfile { Name = "User service-only DNS", Servers = ["9.9.9.9"] });
+            var custom = new ChannelProfile { Name = "User service-only DNS", Servers = ["9.9.9.9"], Note = "Saved service settings" };
+            remote.Profiles.Add(custom);
             var service = new UiPersistenceTests.FakeService { State = new AppStatus { Config = remote } };
             await using var backend = new UiBackend(directory, service, includeBundledChannels: true);
             await backend.RefreshAsync();
-            Require(backend.Status.Config.Profiles.Count == 27 && backend.Status.Config.Profiles.Any(p => p.Name == "User service-only DNS"), "Bundled additions replaced an independent service channel.");
+            var profiles = backend.Status.Config.Profiles;
+            Require(profiles.Count == 32 && profiles.Any(p => p.Id == custom.Id && p.Note == custom.Note)
+                && local.Profiles.Skip(3).All(saved => profiles.Any(p => p.Id == saved.Id)),
+                "Optional catalog entries took space required by saved local and service channels.");
+            int pending = catalogCount + localOnlyCount + 1 - 32;
+            Require(!File.Exists(Path.Combine(directory, "bundled-channels.json"))
+                && backend.ConfigurationWarning?.Contains("осталось " + pending) == true,
+                "An incomplete synchronized catalog was marked complete or its pending entry was hidden.");
             Require(service.ConfigurationCalls == 0, "Catalog migration reconfigured the live service.");
         });
     }

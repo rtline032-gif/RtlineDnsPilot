@@ -14,14 +14,17 @@ internal interface IApplicationUpdateHost
     int ProcessId { get; }
     long ProcessStartUtcTicks { get; }
     string ApplicationDirectory { get; }
+    string ApplicationVersion { get; }
     bool ServiceInstalled { get; }
     Task WaitForProcessExitAsync(int processId, long startUtcTicks, CancellationToken token);
     Task InstallServiceAsync(string packageDirectory, CancellationToken token);
+    Task<bool> RollbackServiceAsync(string previousVersion, CancellationToken token);
     void Start(string executable, IReadOnlyList<string> arguments);
     Task<bool> LaunchAndWaitForReadyAsync(string executable, string dataDirectory, string ackPath, CancellationToken token);
+    Task<bool> LaunchPreviousAndWaitForReadyAsync(string executable, string previousVersion, string dataDirectory, Action selectVersion, CancellationToken token);
 }
 
-internal sealed class ApplicationUpdateLauncher
+internal sealed partial class ApplicationUpdateLauncher
 {
     private const int MetadataLimit = 256 * 1024;
     private const long PackageLimit = 128L * 1024 * 1024;
@@ -31,7 +34,7 @@ internal sealed class ApplicationUpdateLauncher
         "profiles.json", "CHANNELS.txt", "README.txt", "LICENSE", "PRIVACY.md", "CODE_SIGNING.md", "SHA256SUMS.txt"
     ], StringComparer.OrdinalIgnoreCase);
     private static readonly string[] NonGuiModes = ["--service", "--install-service", "--uninstall-service", "--restore-dns", "--automatic-dns", "--probe",
-        "--ui-smoke", "--journal-smoke", "--settings-smoke", "--channels-smoke", "--complete-application-update", "--skip-update-route"];
+        "--ui-smoke", "--journal-smoke", "--settings-smoke", "--channels-smoke", "--complete-application-update", "--complete-application-rollback", "--rollback-service", "--skip-update-route"];
     private readonly string _root;
     private readonly IApplicationUpdateHost _host;
     private readonly Action<string, string> _validatePackage;
@@ -353,6 +356,7 @@ internal sealed class ApplicationUpdateLauncher
         public int ProcessId => Environment.ProcessId;
         public long ProcessStartUtcTicks { get { using var process = Process.GetCurrentProcess(); return process.StartTime.ToUniversalTime().Ticks; } }
         public string ApplicationDirectory => AppContext.BaseDirectory;
+        public string ApplicationVersion => AppVersion.Current;
         public bool ServiceInstalled => ServiceClient.IsInstalled;
         public async Task WaitForProcessExitAsync(int processId, long startUtcTicks, CancellationToken token)
         {
@@ -366,6 +370,7 @@ internal sealed class ApplicationUpdateLauncher
             catch (InvalidOperationException) { } // Process exited between opening its PID and reading its start time.
         }
         public Task InstallServiceAsync(string packageDirectory, CancellationToken token) => ServiceClient.InstallPackageAsync(packageDirectory, token);
+        public Task<bool> RollbackServiceAsync(string previousVersion, CancellationToken token) => ServiceClient.RollbackPackageAsync(previousVersion, token);
         public void Start(string executable, IReadOnlyList<string> arguments)
         {
             using var process = Process.Start(StartInfo(executable, arguments)) ?? throw new IOException("Не удалось запустить окно программы.");
@@ -393,6 +398,45 @@ internal sealed class ApplicationUpdateLauncher
             {
                 if (!acknowledged && !process.HasExited && process.StartTime.ToUniversalTime().Ticks == started)
                 { try { process.Kill(entireProcessTree: true); await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); } catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException) { } }
+            }
+        }
+        public async Task<bool> LaunchPreviousAndWaitForReadyAsync(string executable, string previousVersion, string dataDirectory, Action selectVersion, CancellationToken token)
+        {
+            using var process = Process.Start(StartInfo(executable, ["--skip-update-route", "--data-dir", dataDirectory]))
+                ?? throw new IOException("Не удалось открыть предыдущую версию.");
+            string title = "RtlineDnsPilot " + previousVersion + RuntimeCompatibility.TitleSuffix + " — ";
+            bool ready = false;
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    process.Refresh();
+                    if (process.HasExited) return false;
+                    if (process.MainWindowHandle != IntPtr.Zero && process.MainWindowTitle.StartsWith(title, StringComparison.Ordinal))
+                    {
+                        selectVersion();
+                        ready = true;
+                        return true;
+                    }
+                    await Task.Delay(100, token);
+                }
+                return false;
+            }
+            catch (OperationCanceledException) { return false; }
+            finally
+            {
+                if (!ready)
+                {
+                    try
+                    {
+                        if (!process.HasExited)
+                        {
+                            process.Kill();
+                            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3));
+                        }
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException) { }
+                }
             }
         }
         private static ProcessStartInfo StartInfo(string executable, IReadOnlyList<string> arguments)

@@ -4,6 +4,9 @@ namespace NetPilot;
 
 public sealed class MainForm : Form
 {
+    private const string ChatGptProbeCaption = "HTTPS ChatGPT";
+    private const string ChatGptProbeHelp = "Анонимная публичная HTTPS-проверка с разрешением имени через канал. Авторизованная работа Codex, генерация и WebSocket не проверяются. Для проверки системного DNS и соединения Codex нужны отдельные измерения.";
+
     private readonly UiBackend _backend;
     private readonly DnsShareClient _shareClient;
     private readonly ApplicationUpdateClient _applicationUpdates;
@@ -25,6 +28,8 @@ public sealed class MainForm : Form
     private readonly Button _enable = MakeButton("Включить управление DNS");
     private readonly Button _updateService = MakeButton("Обновить службу");
     private readonly Button _updateApplication = MakeButton("Обновить программу");
+    private readonly Button _rollbackApplication = MakeButton("Откатить обновление");
+    private readonly Button _relayDiagnostics = MakeButton("Диагностика посредника");
     private readonly Button _reconnect = MakeButton("Проверить связь");
     private readonly Button _disable = MakeButton("Отключить управление");
     private readonly Button _restore = MakeButton("Восстановить DNS");
@@ -52,7 +57,7 @@ public sealed class MainForm : Form
     private readonly Label _targetsHint = new() { Text = "Изменения начнут действовать после «Применить объекты».", AutoSize = true, Dock = DockStyle.Fill, ForeColor = Color.DimGray };
     private readonly DataGridView _grid = new();
     private readonly TextBox _url = new() { Dock = DockStyle.Fill, MaxLength = 2048 };
-    private readonly CheckBox _monitorChatGpt = new() { Text = "ChatGPT / Codex", AutoSize = true, Checked = true, Margin = new Padding(0, 4, 24, 4) };
+    private readonly CheckBox _monitorChatGpt = new() { Text = ChatGptProbeCaption, AutoSize = true, Checked = true, Margin = new Padding(0, 4, 24, 4) };
     private readonly CheckBox _monitorGemini = new() { Text = "Gemini", AutoSize = true, Margin = new Padding(0, 4, 24, 4) };
     private readonly CheckBox _monitorTailscale = new() { Text = "Tailscale", AutoSize = true, Margin = new Padding(0, 4, 0, 4) };
     private readonly ContextMenuStrip _channelMenu = new();
@@ -155,8 +160,10 @@ public sealed class MainForm : Form
         _share.FlatAppearance.MouseDownBackColor = Color.FromArgb(180, 221, 201);
         _share.Margin = new Padding(10, 0, 0, 6);
         _updateApplication.Name="UpdateApplication";
+        _rollbackApplication.Name="RollbackApplication";
+        _relayDiagnostics.Name="RelayDiagnostics";
         _reconnectApplications.Name = "ReconnectApplications";
-        operationBar.Controls.AddRange([_monitor, _probe, _reconnect, _enable, _updateService, _disable, _restore, _automaticDns, _reconnectApplications, _updateApplication, _share]);
+        operationBar.Controls.AddRange([_monitor, _probe, _reconnect, _enable, _updateService, _disable, _restore, _automaticDns, _reconnectApplications, _updateApplication, _rollbackApplication, _relayDiagnostics, _share]);
         root.Controls.Add(operationBar, 0, 1);
         var indicators = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Margin = new Padding(0, 0, 0, 9) };
         var progressSpace = new Panel { Width = 68, Height = 28, Margin = new Padding(0) };
@@ -196,12 +203,13 @@ public sealed class MainForm : Form
         _tips.SetToolTip(_disable, "Отключить управление и вернуть исходные DNS. Если служба не отвечает, появится отдельное подтверждение запуска помощника восстановления и окно разрешения Windows.");
         _tips.SetToolTip(_reconnect, "Повторить запрос состояния службы сейчас. Этот запрос не меняет DNS и не запрашивает права администратора.");
         _tips.SetToolTip(_diagnostics, "Прочитать последний сохранённый результат выбранного канала: DNS-ответы, целевые IP и фазы TCP / TLS / HTTP. Новая проверка не запускается.");
-        _tips.SetToolTip(_automaticDns, "После отдельного подтверждения и UAC: отключить управление RtlineDnsPilot и получать DNS выбранного адаптера автоматически от сети. Это заменит ручные DNS.");
+        _tips.SetToolTip(_automaticDns, "После отдельного подтверждения и UAC: отключить управление RtlineDnsPilot и получать DNS выбранного адаптера автоматически от сети. Это заменит ручные DNS. Установленная служба будет остановлена и отключена. Для обычного возврата исходных DNS используйте «Отключить управление».");
         _tips.SetToolTip(_updateApplication,"Скачать проверенный новый выпуск из официального GitHub и перезапустить программу. Каналы и история сохранятся. Если служба установлена, Windows запросит разрешение на её обновление; управление DNS после обновления будет выключено.");
+        _tips.SetToolTip(_rollbackApplication,"Вернуть предыдущую версию из копии последнего завершённого обновления. Доступ в интернет для отката не нужен.");
         _tips.SetToolTip(_prefer, "Предпочтительный канал используется, пока доступен. При устойчивом отказе сохраняется аварийное переключение.");
         _tips.SetToolTip(_auto, "Выбрать приоритет автовыбора и снять ручную фиксацию или предпочтение.\r\nСамый быстрый — минимальная средняя задержка DNS + HTTPS среди каналов, у которых доступны все выбранные объекты. Это время отклика, не Мбит/с.\r\nСамый стабильный — сначала доля успешных проверок, при равенстве — задержка.\r\nДля обычной оптимизации нужны 5 успешных проверок подряд и 5 минут на текущем канале. При сравнении задержек нужен выигрыш не менее 20%. Аварийное переключение сохраняется.");
         _tips.SetToolTip(_grid, "Правая кнопка: зафиксировать канал, вернуться к авто или удалить. Синий — активный канал, зелёный/красный — свежая доступность остальных. Ошибки активного канала остаются красными. Статистика учитывает текущий набор сервисов.");
-        _tips.SetToolTip(_monitorChatGpt, "Анонимная проверка публичного HTTPS ChatGPT; работоспособность авторизованного Codex не подтверждается.");
+        _tips.SetToolTip(_monitorChatGpt, ChatGptProbeHelp);
         _tips.SetToolTip(_monitorGemini, "Анонимная проверка https://gemini.google.com/. Вход в аккаунт и генерация Gemini не проверяются.");
         _tips.SetToolTip(_monitorTailscale, "HTTPS-доступность https://login.tailscale.com/ через канал. Работа VPN-туннеля, устройств и RDP не проверяется; Tailscale не перенастраивается.");
         _tips.SetToolTip(_monitoringIndicator, "Состояние автоматического наблюдения. Индикатор справа показывает получение данных, а время — последнее записанное измерение; опрос состояния не запускает сетевые проверки.");
@@ -235,6 +243,12 @@ public sealed class MainForm : Form
         _reconnect.Click += async (_, _) => await RunAsync(() => _backend.ReconnectAsync(), "Проверка связи со службой");
         _enable.Click += async (_, _) => await EnableAsync();
         _updateApplication.Click += async (_, _) => await UpdateApplicationAsync();
+        _rollbackApplication.Click += async (_, _) => await RollbackApplicationAsync();
+        _relayDiagnostics.Click += (_, _) =>
+        {
+            using var dialog = new RelayDiagnosticsDialog(token => _backend.ReadRelayDiagnosticsAsync(token));
+            dialog.ShowDialog(this);
+        };
         _updateService.Click += async (_, _) =>
         {
             var repair = _backend.DnsStateUnknown;
@@ -394,7 +408,7 @@ public sealed class MainForm : Form
         var targets = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Margin = new Padding(0) };
         targets.Controls.AddRange([_monitorChatGpt, _monitorGemini, _monitorTailscale]);
         AddSetting(builtIns, "Встроенные объекты", targets, 0);
-        AddSetting(builtIns, "HTTPS ChatGPT / Codex", _url, 1);
+        AddSetting(builtIns, ChatGptProbeCaption, _url, 1);
         AddSetting(builtIns, "HTTPS Gemini", new Label { Text = MonitoringTargets.GeminiUrl, AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(0, 4, 0, 0), ForeColor = Color.DimGray }, 2);
         AddSetting(builtIns, "HTTPS Tailscale", new Label { Text = MonitoringTargets.TailscaleUrl, AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(0, 4, 0, 0), ForeColor = Color.DimGray }, 3);
         layout.Controls.Add(builtIns, 0, 0);
@@ -789,7 +803,7 @@ public sealed class MainForm : Form
                 var result = MonitoringTargets.Service(last, target.Id);
                 var cell = row.Cells[ServiceColumn(target.Id)];
                 cell.Value = ServiceLabel(profile.Enabled, result, status.Config, now);
-                cell.ToolTipText = target.Name + "\r\n" + target.Url + (result is null ? "\r\nНет измерений для текущего набора объектов." : $"\r\n{result.At.ToLocalTime():dd.MM.yyyy HH:mm:ss}\r\nDNS: {Milliseconds(result.DnsMs)} мс; HTTPS: {Milliseconds(result.HttpsMs)} мс\r\n{result.Stage}: {result.Detail}")
+                cell.ToolTipText = ProbeCaption(target) + "\r\n" + target.Url + (result is null ? "\r\nНет измерений для текущего набора объектов." : $"\r\n{result.At.ToLocalTime():dd.MM.yyyy HH:mm:ss}\r\nDNS: {Milliseconds(result.DnsMs)} мс; HTTPS: {Milliseconds(result.HttpsMs)} мс\r\n{result.Stage}: {result.Detail}")
                     + "\r\n" + CountryTooltip(result, status.Config, now, profile.Enabled && availability != ChannelAvailability.Outdated);
                 if (availability == ChannelAvailability.Unavailable && result is { Success: false })
                 {
@@ -848,11 +862,11 @@ public sealed class MainForm : Form
         var heading = _backend.DnsStateUnknown ? "Страны для объектов: активный канал службы не подтверждён."
             : profile is null ? "Страны для объектов: активный включённый канал ещё не выбран."
             : "Страны, которые сайты сообщили при проверке через «" + profile.Name.ReplaceLineEndings(" ") + "»:";
-        var values = targets.Select(target => target.Name.ReplaceLineEndings(" ") + ": "
+        var values = targets.Select(target => ProbeCaption(target).ReplaceLineEndings(" ") + ": "
             + CountryLabel(MonitoringTargets.Service(last, target.Id), status.Config, now, fresh));
         _countries.Text = heading + "\r\n" + string.Join("   ·   ", values)
             + "\r\nАнонимные HTTPS-проверки; это не регион аккаунта." + (status.SystemDnsManaged || _backend.DnsStateUnknown ? "" : " Управление DNS выключено.");
-        _tips.SetToolTip(_countries, string.Join("\r\n\r\n", targets.Select(target => target.Name + "\r\n"
+        _tips.SetToolTip(_countries, string.Join("\r\n\r\n", targets.Select(target => ProbeCaption(target) + "\r\n"
             + CountryTooltip(MonitoringTargets.Service(last, target.Id), status.Config, now, fresh)))
             + "\r\n\r\nСтрана показывается только по явному ответу самого сайта. Если сайт не сообщает её, выводится «Не определена». Старые измерения не используются.");
     }
@@ -875,6 +889,8 @@ public sealed class MainForm : Form
         return text;
     }
 
+    private static string ProbeCaption(MonitoringTarget target) => target.Id == MonitoringTargets.ChatGpt ? ChatGptProbeCaption : target.Name;
+
     private void SyncServiceColumns(AppConfig config)
     {
         var targets = MonitoringTargets.Selected(config);
@@ -883,7 +899,16 @@ public sealed class MainForm : Form
         foreach (var column in _grid.Columns.Cast<DataGridViewColumn>().Where(c => c.Name.StartsWith("service_", StringComparison.Ordinal)).ToArray())
             _grid.Columns.Remove(column);
         for (var index = 0; index < targets.Length; index++)
-            _grid.Columns.Insert(4 + index, new DataGridViewTextBoxColumn { Name = ServiceColumn(targets[index].Id), HeaderText = targets[index].Name, FillWeight = 135, MinimumWidth = 165, SortMode = DataGridViewColumnSortMode.NotSortable });
+        {
+            var target = targets[index];
+            _grid.Columns.Insert(4 + index, new DataGridViewTextBoxColumn
+            {
+                Name = ServiceColumn(target.Id),
+                HeaderText = ProbeCaption(target),
+                ToolTipText = target.Id == MonitoringTargets.ChatGpt ? ChatGptProbeHelp : string.Empty,
+                FillWeight = 135, MinimumWidth = 165, SortMode = DataGridViewColumnSortMode.NotSortable
+            });
+        }
         _serviceColumnsKey = key;
     }
 
@@ -1016,6 +1041,9 @@ public sealed class MainForm : Form
         _updateService.Visible = _backend.ServiceUpdateAvailable;
         _updateService.Enabled = !_busy;
         _updateApplication.Enabled = !_busy;
+        _rollbackApplication.Enabled = !_busy;
+        _relayDiagnostics.Enabled = !_busy;
+        _tips.SetToolTip(_relayDiagnostics, "Однократно прочитать метаданные фактических запросов локального DNS-посредника. Без новых сетевых проб, изменения DNS и записи имён сайтов; в памяти сохраняются ограниченные сведения за последние 5 минут.");
         _updateService.Text = _backend.DnsStateUnknown ? "Исправить службу" : "Обновить службу";
         _tips.SetToolTip(_updateService, _backend.DnsStateUnknown
             ? "Помощник с разрешением Windows восстановит или обновит файлы службы и выключит управление DNS. Каналы и история сохранятся; управление затем можно включить отдельно."
@@ -1118,7 +1146,7 @@ public sealed class MainForm : Form
             : _settingsDirty ? "Есть несохранённые настройки. «Применить» обновит параметры проверок; управление DNS включается отдельно."
             : status.SystemDnsManaged ? "Для смены адаптера сначала отключите управление и восстановите DNS." : "Адаптер будет изменён только после отдельного подтверждения управления DNS.";
         _targetsHint.Text = _settingsDirty ? "Есть несохранённые изменения. Нажмите «Применить объекты»; будут сохранены и параметры вкладки «Проверка и сеть»."
-            : "Выбранные объекты: " + string.Join(", ", MonitoringTargets.Selected(status.Config).Select(t => t.Name)) + ". При изменении набора нужны новые измерения; история сохраняется.";
+            : "Выбранные объекты: " + string.Join(", ", MonitoringTargets.Selected(status.Config).Select(ProbeCaption)) + ". При изменении набора нужны новые измерения; история сохраняется.";
     }
 
     private void UpdateAdapters(List<AdapterInfo> adapters, bool force = false, string? selectedId = null)
@@ -1276,11 +1304,14 @@ public sealed class MainForm : Form
     {
         if (_busy || _adapter.SelectedItem is not AdapterInfo adapter) return;
         var id = adapter.Id;
-        var text = $"Получать DNS автоматически для адаптера «{adapter.Name}»?\r\nGUID: {id}\r\n\r\nУправление DNS RtlineDnsPilot будет отключено. Ручные DNS выбранного адаптера будут заменены автоматическими настройками сети для IPv4 и включённого IPv6. Это действие не восстанавливает прежние ручные DNS. IP-адрес, шлюз, VPN и прокси не меняются.\r\n\r\n" + AdministratorHelp;
+        var text = AutomaticDnsConfirmation(adapter);
         if (MessageBox.Show(this, text, "Сброс DNS на автоматическое получение", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
             MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
         await RunAsync(() => _backend.ResetAutomaticDnsAsync(id), "Автоматическое получение DNS");
     }
+
+    private static string AutomaticDnsConfirmation(AdapterInfo adapter) =>
+        $"Получать DNS автоматически для адаптера «{adapter.Name}»?\r\nGUID: {adapter.Id}\r\n\r\nУправление DNS RtlineDnsPilot будет отключено. Если служба RtlineDnsPilot DNS установлена, она будет остановлена и её тип запуска станет «Отключена». Для обычного выхода из управления с возвратом исходных DNS используйте «Отключить управление». Ручные DNS выбранного адаптера будут заменены автоматическими настройками сети для IPv4 и включённого IPv6. Это действие не восстанавливает прежние ручные DNS. IP-адрес, шлюз, VPN и прокси не меняются.\r\n\r\n" + AdministratorHelp;
 
     private async Task EditProfileAsync(bool add)
     {
@@ -1475,13 +1506,38 @@ public sealed class MainForm : Form
             var request=await _updateLauncher.PrepareAsync(update,AppContext.BaseDirectory,_backend.DataDirectory,_backend.ServiceInstalled);
             _updateLauncher.StartCompletionWorker(request);
             await _updateLauncher.WaitForWorkerReadyAsync(request);
-            _timer.Stop();
-            CancelHistoryRead();
-            await _backend.DisposeAsync();
-            _backendDisposed=true;
-            _reallyClose=true;
-            Close();
+            await CloseForApplicationRestartAsync();
         },"Обновление программы");
+    }
+
+    private async Task RollbackApplicationAsync()
+    {
+        if (_smoke || _busy) return;
+        await RunAsync(async () =>
+        {
+            if (_settingsDirty)
+                throw new InvalidOperationException("Сначала примените несохранённые настройки, затем повторите откат.");
+            string previous = _updateLauncher.GetRollbackVersion(_backend.DataDirectory);
+            string message = "Вернуться с версии " + AppVersion.Current + " на " + previous + "? Настройки и история сохранятся.";
+            if (_backend.ServiceInstalled)
+                message += "\r\n\r\nПодтвердите разрешение Windows. Помощник сначала восстановит исходный DNS, затем вернёт версию службы. После отката управление DNS будет выключено.";
+            if (MessageBox.Show(this, message, "Откат обновления", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                    MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            var request = _updateLauncher.PrepareRollback(_backend.DataDirectory, previous);
+            _updateLauncher.StartRollbackWorker(request);
+            await _updateLauncher.WaitForRollbackWorkerReadyAsync(request);
+            await CloseForApplicationRestartAsync();
+        }, "Откат обновления");
+    }
+
+    private async Task CloseForApplicationRestartAsync()
+    {
+        _timer.Stop();
+        CancelHistoryRead();
+        await _backend.DisposeAsync();
+        _backendDisposed = true;
+        _reallyClose = true;
+        Close();
     }
 
     internal void ShowUpdateWarning(string message)

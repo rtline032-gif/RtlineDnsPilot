@@ -27,7 +27,7 @@ $taskStage = Join-Path $taskOutput 'stage'
 $taskRuntimeFiles = @('RtlineDnsPilot.exe','RtlineDnsPilot.dll','RtlineDnsPilot.deps.json','RtlineDnsPilot.runtimeconfig.json')
 $taskPublicFiles = @('profiles.json','CHANNELS.txt','README.txt','LICENSE','PRIVACY.md','CODE_SIGNING.md')
 $taskProfiles = @(Get-Content -LiteralPath (Join-Path $taskSource 'profiles.json') -Raw | ConvertFrom-Json)
-if ($taskProfiles.Count -ne 26) { throw 'The public import must contain all 26 known profiles.' }
+if ($taskProfiles.Count -ne 32) { throw 'The public import must contain all 32 known profiles.' }
 $taskProfileFields = @('Id','Name','Enabled','Mode','Servers','DnsPort','DohUrl','Note')
 foreach ($taskProfile in $taskProfiles) {
     if (@($taskProfile.PSObject.Properties.Name | Where-Object { $_ -notin $taskProfileFields }).Count) { throw 'Unexpected field in the public DNS catalog.' }

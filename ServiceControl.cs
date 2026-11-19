@@ -16,7 +16,7 @@ using JsonRequiredAttribute = System.Text.Json.Serialization.JsonRequiredAttribu
 
 namespace NetPilot;
 
-public static class ServiceClient
+public static partial class ServiceClient
 {
     public static bool IsInstalled
     {
@@ -25,7 +25,7 @@ public static class ServiceClient
     public static async Task<RpcReply> SendAsync(RpcRequest request,CancellationToken token=default)
     {
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);
-        deadline.CancelAfter(request.Command is "status" or "history" or "share-candidates" or "probe-diagnostics"?TimeSpan.FromSeconds(3):TimeSpan.FromSeconds(150));
+        deadline.CancelAfter(request.Command is "status" or "history" or "share-candidates" or "probe-diagnostics" or "relay-diagnostics"?TimeSpan.FromSeconds(3):TimeSpan.FromSeconds(150));
         using var pipe=new NamedPipeClientStream(".",AppPaths.PipeName,PipeDirection.InOut,PipeOptions.Asynchronous);
         await pipe.ConnectAsync(2000,deadline.Token);
         await PipeMessages.WriteAsync(pipe,JsonData.Encode(request),deadline.Token);
@@ -126,7 +126,7 @@ internal sealed class ServiceRpc(MonitorEngine engine,string ownerSid,string pip
                 try
                 {
                     var request=JsonData.Decode<RpcRequest>(await PipeMessages.ReadAsync(pipe,1024*1024,timeout.Token));
-                    reportOnly=request.Command is "history" or "share-candidates" or "probe-diagnostics";
+                    reportOnly=request.Command is "history" or "share-candidates" or "probe-diagnostics" or "relay-diagnostics";
                     if(reportOnly)
                     {
                         timeout.CancelAfter(TimeSpan.FromSeconds(3));
@@ -134,6 +134,7 @@ internal sealed class ServiceRpc(MonitorEngine engine,string ownerSid,string pip
                         {
                             "history" => new RpcReply {Ok=true,History=engine.GetHistory(request.History??throw new ArgumentException("Не указан период графика."))},
                             "probe-diagnostics" => new RpcReply {Ok=true,ProbeDiagnostics=engine.GetProbeDiagnostics(request.ProfileId??throw new ArgumentException("Не указан канал диагностики."))},
+                            "relay-diagnostics" => new RpcReply {Ok=true,RelayDiagnostics=engine.GetRelayDiagnostics()},
                             _ => new RpcReply {Ok=true,Share=engine.GetShareCandidates()}
                         };
                     }
@@ -181,9 +182,11 @@ public sealed class InstallReceipt
     [JsonRequired]
     public string Version { get; set; } = AppVersion.Current;
     public DateTimeOffset InstalledAt { get; set; } = DateTimeOffset.UtcNow;
+    [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? RollbackSnapshotId { get; set; }
 }
 
-internal static class ServiceInstaller
+internal static partial class ServiceInstaller
 {
     private static readonly string[] PackageFiles = ["RtlineDnsPilot.exe", "RtlineDnsPilot.dll", "RtlineDnsPilot.deps.json", "RtlineDnsPilot.runtimeconfig.json"];
     public static bool IsAdministrator=>new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
@@ -194,6 +197,8 @@ internal static class ServiceInstaller
         // No later copy reopens a user-writable source file.
         var package=ReadPackage(AppContext.BaseDirectory);
         bool installed=ServiceClient.IsInstalled;
+        VerifyNoReparseAncestors(AppPaths.ServiceData);
+        VerifyNoReparseAncestors(AppPaths.InstallDirectory);
         VerifyStateDirectory();
         if(installed) VerifyOwnedService();
         if(Directory.Exists(AppPaths.InstallDirectory)) VerifyTrustedObject(AppPaths.InstallDirectory,true);
@@ -214,9 +219,11 @@ internal static class ServiceInstaller
         {
             // This also covers launching the helper from the installed directory:
             // never stop or copy it over itself when all four files and the receipt match.
-            if(previous!.Version!=AppVersion.Current) WriteReceipt(previous,sid);
+            if(previous!.Version!=AppVersion.Current) WriteReceipt(previous,sid,previous.RollbackSnapshotId);
             await ConfigureAndStartAsync(); return;
         }
+        var rollback=installed && !sameFiles?PrepareUpgradeRollback(previous!,package):null;
+        string? rollbackId=sameFiles?previous?.RollbackSnapshotId:rollback?.Snapshot.Id;
         if(installed) await RestoreCoreAsync(false,forServiceUpdate:true);
         SecureDirectory(AppPaths.InstallDirectory);
         SecureDirectory(AppPaths.ServiceData);
@@ -231,8 +238,16 @@ internal static class ServiceInstaller
         if(pendingCatalog==0) AtomicStore.Write(catalogMarker,BundledChannels.Revision,ProtectFileOwner);
         ProtectFileOwner(Path.Combine(AppPaths.ServiceData,"config.json"));
         if(File.Exists(Path.Combine(AppPaths.ServiceData,"config.json.bak"))) ProtectFileOwner(Path.Combine(AppPaths.ServiceData,"config.json.bak"));
-        if(!sameFiles) WritePackage(package);
-        WriteReceipt(previous,sid);
+        if(!sameFiles)
+        {
+            if(rollback is not null)
+            {
+                RevalidateProtectedPackage(rollback.Current);
+                SaveRollbackSnapshot(rollback.Snapshot);
+            }
+            WritePackage(package);
+        }
+        WriteReceipt(previous,sid,rollbackId);
         if(!installed) await ScAsync("create",AppPaths.ServiceName,"binPath=","\""+AppPaths.InstalledExe+"\" --service","start=","auto","DisplayName=","RtlineDnsPilot DNS");
         await ConfigureAndStartAsync();
     }
@@ -271,19 +286,28 @@ internal static class ServiceInstaller
     internal static Dictionary<string,byte[]> ReadPackage(string sourceDirectory,string? expectedVersion=null)
     {
         expectedVersion??=AppVersion.Current;
-        if(!Version.TryParse(expectedVersion,out var wanted)) throw new InvalidDataException("Некорректная ожидаемая версия пакета.");
         var package=new Dictionary<string,byte[]>(StringComparer.Ordinal);
         foreach(var file in PackageFiles)
         {
             var path=Path.Combine(sourceDirectory,file);
             if(!File.Exists(path)||(File.GetAttributes(path)&(FileAttributes.ReparsePoint|FileAttributes.Directory))!=0)
                 throw new IOException("Отсутствует обычный файл пакета: "+file);
+            if(new FileInfo(path).Length is <=0 or >MaximumRuntimeFileBytes) throw new InvalidDataException("Размер файла пакета вне допустимых границ: "+file);
             var bytes=File.ReadAllBytes(path);
             if(bytes.Length==0) throw new InvalidDataException("Файл пакета пуст: "+file);
             package.Add(file,bytes);
         }
+        ValidatePackageBytes(package,expectedVersion);
+        return package;
+    }
+
+    internal static void ValidatePackageBytes(IReadOnlyDictionary<string,byte[]> package,string expectedVersion)
+    {
+        if(!Version.TryParse(expectedVersion,out var wanted)) throw new InvalidDataException("Некорректная ожидаемая версия пакета.");
+        ValidatePackageBounds(package);
         ValidateRuntimeConfig(package["RtlineDnsPilot.runtimeconfig.json"]);
-        ValidateDependencies(package["RtlineDnsPilot.deps.json"],expectedVersion);
+        string dependencyVersion=wanted.Revision<=0?new Version(wanted.Major,wanted.Minor,Math.Max(0,wanted.Build)).ToString():wanted.ToString();
+        ValidateDependencies(package["RtlineDnsPilot.deps.json"],dependencyVersion);
         if(NormalizeVersion(ReadManagedVersion(package["RtlineDnsPilot.dll"],"RtlineDnsPilot.dll"))!=NormalizeVersion(wanted))
             throw new InvalidDataException("RtlineDnsPilot.dll не соответствует ожидаемой версии "+expectedVersion+". Пакет не изменён.");
         try
@@ -296,7 +320,6 @@ internal static class ServiceInstaller
                 throw new BadImageFormatException();
         }
         catch(BadImageFormatException ex) { throw new InvalidDataException("Повреждён исполняемый файл пакета RtlineDnsPilot.exe.",ex); }
-        return package;
     }
 
     internal static Version ReadManagedVersion(byte[] bytes,string file,bool allowLegacy=false)
@@ -379,13 +402,18 @@ internal static class ServiceInstaller
         if(!PackageMatchesInstalled(package,AppPaths.InstallDirectory)) throw new IOException("Не подтверждена полная запись пакета. Служба оставлена выключенной.");
     }
 
-    private static void WriteReceipt(InstallReceipt? previous,string sid)
+    private static void WriteReceipt(InstallReceipt? previous,string sid,string? rollbackSnapshotId=null)
     {
         var receipt=new InstallReceipt
         {
             OwnerSid=previous?.OwnerSid??sid,Version=AppVersion.Current,
-            InstalledAt=previous?.InstalledAt??DateTimeOffset.UtcNow
+            InstalledAt=previous?.InstalledAt??DateTimeOffset.UtcNow,RollbackSnapshotId=rollbackSnapshotId
         };
+        WriteExactReceipt(receipt);
+    }
+
+    private static void WriteExactReceipt(InstallReceipt receipt)
+    {
         var path=Path.Combine(AppPaths.ServiceData,"install.json");
         AtomicStore.Write(path,receipt,ProtectFileOwner);
         if(File.Exists(path+".bak")) ProtectFileOwner(path+".bak");

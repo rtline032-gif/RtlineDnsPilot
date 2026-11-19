@@ -13,7 +13,14 @@ public sealed class DnsTransport : IDisposable
     private readonly Dictionary<string, HttpClient> _dohClients = new(StringComparer.Ordinal);
     private bool _disposed;
 
-    public async Task<byte[]> ExchangeAsync(ChannelProfile profile, byte[] query, CancellationToken cancellationToken)
+    public Task<byte[]> ExchangeAsync(ChannelProfile profile, byte[] query, CancellationToken cancellationToken)
+        => ExchangeCoreAsync(profile, query, cancellationToken, null);
+
+    internal Task<byte[]> ExchangeObservedAsync(ChannelProfile profile, byte[] query, CancellationToken cancellationToken,
+        Action<DnsUpstreamDiagnostic> observe) => ExchangeCoreAsync(profile, query, cancellationToken, observe);
+
+    private async Task<byte[]> ExchangeCoreAsync(ChannelProfile profile, byte[] query, CancellationToken cancellationToken,
+        Action<DnsUpstreamDiagnostic>? observe)
     {
         ArgumentNullException.ThrowIfNull(profile);
         DnsWire.ValidateQuery(query);
@@ -42,19 +49,45 @@ public sealed class DnsTransport : IDisposable
                 using var attempt = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
                 var addressBudgetMs = dohUri != null && addresses.Length == 1 ? 8000 : Math.Clamp(8000 / addresses.Length, 750, 3000);
                 attempt.CancelAfter(TimeSpan.FromMilliseconds(addressBudgetMs));
+                var trace = observe is null ? null : new DnsUpstreamDiagnostic
+                { Server = address.ToString(), Port = dohUri?.Port ?? profile.DnsPort, Transport = dohUri is null ? "UDP" : "DoH", Stage = "starting" };
+                var traceTimer = trace is null ? null : System.Diagnostics.Stopwatch.StartNew();
                 try
                 {
                     // Pin the entire DoH exchange to one bootstrap address. TLS, HTTP, body validation,
                     // and DNS RCODE failures must all permit a secondary, not just TCP connect failures.
                     var response = dohUri != null
-                        ? await ExchangeDohAsync(dohUri, address, query, attempt.Token).ConfigureAwait(false)
-                        : await ExchangeUdpAsync(new IPEndPoint(address, profile.DnsPort), query, attempt.Token).ConfigureAwait(false);
+                        ? await ExchangeDohAsync(dohUri, address, query, attempt.Token, trace).ConfigureAwait(false)
+                        : await ExchangeUdpAsync(new IPEndPoint(address, profile.DnsPort), query, attempt.Token, trace).ConfigureAwait(false);
+                    if (trace is not null)
+                    {
+                        trace.ResponseCode = DnsWire.ResponseCode(response);
+                        trace.Outcome = trace.ResponseCode == 0 ? "response" : "negative-response";
+                    }
                     if (DnsWire.ResponseCode(response) is 2 or 5) { dnsFailure = response; continue; }
                     return response; // Includes valid negative answers such as NXDOMAIN.
                 }
                 catch (Exception ex) when (ex is SocketException or IOException or InvalidDataException or HttpRequestException or AuthenticationException
                     || (ex is OperationCanceledException && !deadline.IsCancellationRequested))
-                { last = new IOException(upstream + ": " + DescribeFailure(ex), ex); }
+                {
+                    if (trace is not null) { trace.Outcome = "error"; trace.ErrorCode = RelayDiagnostics.Error(ex, cancellationToken.IsCancellationRequested); }
+                    last = new IOException(upstream + ": " + DescribeFailure(ex), ex);
+                }
+                finally
+                {
+                    if (trace is not null)
+                    {
+                        trace.ElapsedMs = traceTimer!.Elapsed.TotalMilliseconds;
+                        if (trace.Outcome.Length == 0)
+                        {
+                            trace.Outcome = "interrupted";
+                            trace.ErrorCode = cancellationToken.IsCancellationRequested ? "CANCELLED" : deadline.IsCancellationRequested ? "TIMEOUT" : "NOT_COMPLETED";
+                        }
+                        // An observer cannot change DNS response or fallback semantics.
+                        try { observe!(trace); }
+                        catch (Exception ex) when (ex is not OutOfMemoryException && ex is not StackOverflowException) { }
+                    }
+                }
             }
             if (dnsFailure != null) return dnsFailure;
             throw new IOException("DNS-профиль не ответил корректно. " + last?.Message, last);
@@ -88,38 +121,51 @@ public sealed class DnsTransport : IDisposable
         return detail[..Math.Min(detail.Length, 900)];
     }
 
-    private static async Task<byte[]> ExchangeUdpAsync(IPEndPoint endpoint, byte[] query, CancellationToken token)
+    private static async Task<byte[]> ExchangeUdpAsync(IPEndPoint endpoint, byte[] query, CancellationToken token, DnsUpstreamDiagnostic? trace = null)
     {
         using var socket = new Socket(endpoint.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+        if (trace is not null) trace.Stage = "udp-connect";
         await socket.ConnectAsync(endpoint, token).ConfigureAwait(false); // Connected UDP filters foreign source endpoints.
+        if (trace is not null) trace.Stage = "udp-send";
         var sent = await socket.SendAsync(query, SocketFlags.None, token).ConfigureAwait(false);
         if (sent != query.Length) throw new IOException("Неполная отправка DNS запроса.");
         var buffer = new byte[DnsWire.MaxMessage];
+        if (trace is not null) trace.Stage = "udp-receive";
         var count = await socket.ReceiveAsync(buffer, SocketFlags.None, token).ConfigureAwait(false);
         var response = buffer[..count];
+        if (trace is not null) trace.Stage = "udp-validate";
         DnsWire.ValidateResponse(query, response);
-        if (DnsWire.IsTruncated(response)) return await ExchangeTcpAsync(endpoint, query, token).ConfigureAwait(false);
+        if (DnsWire.IsTruncated(response))
+        {
+            if (trace is not null) { trace.TcpFallback = true; trace.Transport = "TCP"; }
+            return await ExchangeTcpAsync(endpoint, query, token, trace).ConfigureAwait(false);
+        }
         return response;
     }
 
-    private static async Task<byte[]> ExchangeTcpAsync(IPEndPoint endpoint, byte[] query, CancellationToken token)
+    private static async Task<byte[]> ExchangeTcpAsync(IPEndPoint endpoint, byte[] query, CancellationToken token, DnsUpstreamDiagnostic? trace = null)
     {
         using var socket = new Socket(endpoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        if (trace is not null) trace.Stage = "tcp-connect";
         await socket.ConnectAsync(endpoint, token).ConfigureAwait(false);
         using var stream = new NetworkStream(socket, ownsSocket: false);
         var prefix = new byte[2]; BinaryPrimitives.WriteUInt16BigEndian(prefix, (ushort)query.Length);
+        if (trace is not null) trace.Stage = "tcp-send";
         await stream.WriteAsync(prefix, token).ConfigureAwait(false);
         await stream.WriteAsync(query, token).ConfigureAwait(false);
+        if (trace is not null) trace.Stage = "tcp-receive-length";
         await stream.ReadExactlyAsync(prefix, token).ConfigureAwait(false);
         var length = BinaryPrimitives.ReadUInt16BigEndian(prefix);
         if (length < 12) throw new InvalidDataException("Некорректная длина DNS TCP ответа.");
+        if (trace is not null) trace.Stage = "tcp-receive-body";
         var response = new byte[length]; await stream.ReadExactlyAsync(response, token).ConfigureAwait(false);
+        if (trace is not null) trace.Stage = "tcp-validate";
         DnsWire.ValidateResponse(query, response);
         if (DnsWire.IsTruncated(response)) throw new InvalidDataException("Оборванный DNS ответ после TCP fallback.");
         return response;
     }
 
-    private async Task<byte[]> ExchangeDohAsync(Uri uri, IPAddress address, byte[] query, CancellationToken token)
+    private async Task<byte[]> ExchangeDohAsync(Uri uri, IPAddress address, byte[] query, CancellationToken token, DnsUpstreamDiagnostic? trace = null)
     {
         var key = uri.AbsoluteUri + "|" + address;
         HttpClient client; var owned = false;
@@ -143,12 +189,15 @@ public sealed class DnsTransport : IDisposable
             };
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/dns-message");
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/dns-message"));
+            if (trace is not null) trace.Stage = "doh-request";
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+            if (trace is not null) { trace.Stage = "doh-headers"; trace.HttpStatus = (int)response.StatusCode; }
             if (!response.IsSuccessStatusCode) throw new HttpRequestException("DoH HTTP " + (int)response.StatusCode + ".", null, response.StatusCode);
             if (!string.Equals(response.Content.Headers.ContentType?.MediaType, "application/dns-message", StringComparison.OrdinalIgnoreCase)
                 || response.Content.Headers.ContentEncoding.Count > 0)
                 throw new InvalidDataException("DoH вернул неподдерживаемый формат ответа.");
             if (response.Content.Headers.ContentLength is > DnsWire.MaxMessage) throw new InvalidDataException("Ответ DoH превышает 65535 байт.");
+            if (trace is not null) trace.Stage = "doh-body";
             using var body = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
             using var bytes = new MemoryStream(); var buffer = new byte[4096];
             while (true)
@@ -158,6 +207,7 @@ public sealed class DnsTransport : IDisposable
                 bytes.Write(buffer, 0, count);
                 if (bytes.Length > DnsWire.MaxMessage) throw new InvalidDataException("Ответ DoH превышает 65535 байт.");
             }
+            if (trace is not null) trace.Stage = "doh-validate";
             var packet = bytes.ToArray(); DnsWire.ValidateResponse(query, packet);
             if (DnsWire.IsTruncated(packet)) throw new InvalidDataException("DoH вернул усечённый DNS ответ.");
             return packet;

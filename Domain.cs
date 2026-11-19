@@ -248,6 +248,8 @@ public sealed class RpcReply
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
     public ChannelDiagnosticsSnapshot? ProbeDiagnostics { get; set; }
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
+    public RelayDiagnosticsSnapshot? RelayDiagnostics { get; set; }
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
     public DnsShareOffer? Share { get; set; }
 }
 

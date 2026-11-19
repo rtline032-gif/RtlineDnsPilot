@@ -117,11 +117,14 @@ public static class MonitoringTargets
             Detail=string.Join("\r\n",services.Select(s=>(selected.FirstOrDefault(t=>t.Id==s.ServiceId)?.Name??Name(s.ServiceId))+": "+ServiceSummary(s)+". "+s.Detail))
                 +(!complete?"\r\nНе все выбранные сервисы проверены.":"")};
     }
-    public static async Task<List<ProbeResult>> CheckAsync(AppConfig config,
+    public static Task<List<ProbeResult>> CheckAsync(AppConfig config,
+        Func<ChannelProfile,string,TimeSpan,CancellationToken,Task<ProbeResult>> check,CancellationToken token) =>
+        CheckAsync(config,config.Profiles.Where(p=>p.Enabled).ToArray(),check,token);
+
+    internal static async Task<List<ProbeResult>> CheckAsync(AppConfig config,IReadOnlyList<ChannelProfile> profiles,
         Func<ChannelProfile,string,TimeSpan,CancellationToken,Task<ProbeResult>> check,CancellationToken token)
     {
         using var parallel=new SemaphoreSlim(4);
-        var profiles=config.Profiles.Where(p=>p.Enabled).ToArray();
         var selected=Selected(config);
         var jobs=profiles.SelectMany(profile=>selected.Select(async target=>
         {

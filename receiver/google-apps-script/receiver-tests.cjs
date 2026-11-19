@@ -154,9 +154,8 @@ test('body length is bounded by UTF8 bytes, malformed JSON/type/path rejected',(
       assert.equal(JSON.parse(f.api.doPost(event).text).Error,'invalid_request');
   assert.equal(f.calls.length,before);
 });
-test('26 current and four historical base configurations reject before Drive through either protocol',()=>{
+test('current and historical base configurations reject before Drive through either protocol',()=>{
   const current=JSON.parse(fs.readFileSync(path.join(__dirname,'..','..','profiles.json'),'utf8'));
-  assert.equal(current.length,26);
   const expected=current.map(p=>[p.Mode,p.Servers,p.DnsPort,p.Mode==='Doh'?p.DohUrl:'']).concat([
     ['Doh',['181.215.40.49','31.58.216.201'],53,'https://dns.bezmezhau.com/dns-query'],
     ['Udp',['181.215.40.49','31.58.216.201'],53,''],
@@ -164,7 +163,7 @@ test('26 current and four historical base configurations reject before Drive thr
     ['Doh',['83.220.169.155','212.109.195.93'],53,'https://dns.comss.one/dns-query']
   ]);
   const f=fixture();const key=b=>f.api.profileKey_({Mode:b[0],Servers:b[1],DnsPort:b[2],DohUrl:b[3]});
-  assert.equal(new Set(expected.map(key)).size,30);
+  assert.equal(new Set(expected.map(key)).size,expected.length);
   assert.deepEqual(Array.from(f.api.BASE_PROFILES_,key).sort(),expected.map(key).sort());
   for(const b of expected)for(const protocol of [1,2]) {
     const x=fixture();if(protocol===2)x.api.enablePublicSubmissions();

@@ -37,6 +37,7 @@ public sealed class UiBackend : IAsyncDisposable
     private readonly string _configPath;
     private readonly string _pendingPath;
     private readonly IUiServiceConnection _service;
+    private readonly bool _includeBundledChannels;
     private readonly Func<DateTimeOffset> _clock;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private MonitorEngine? _local;
@@ -73,6 +74,7 @@ public sealed class UiBackend : IAsyncDisposable
     internal UiBackend(string dataDirectory, IUiServiceConnection service, bool includeBundledChannels = false,Func<DateTimeOffset>? clock=null)
     {
         _service = service;
+        _includeBundledChannels = includeBundledChannels;
         _clock=clock??(()=>DateTimeOffset.UtcNow);
         _dataDirectory = dataDirectory;
         Directory.CreateDirectory(dataDirectory);
@@ -109,24 +111,32 @@ public sealed class UiBackend : IAsyncDisposable
         // An existing corrupt file remains untouched for recovery.
         if (!File.Exists(_configPath) && _loadWarning is null) AtomicStore.Write(_configPath, _config);
         Status = new AppStatus { Config = JsonData.Clone(_config), State = "Наблюдение ещё не запускалось" };
-        if (includeBundledChannels && _loadWarning is null)
+        if (includeBundledChannels && !_service.IsInstalled)
+            TryStageBundledChannels(_config, mergeServiceProfiles: !_pendingConfiguration || _mergeServiceProfiles);
+    }
+
+    private bool TryStageBundledChannels(AppConfig config, bool mergeServiceProfiles)
+    {
+        if (!_includeBundledChannels || _loadWarning is not null) return false;
+        bool staged = false;
+        try
         {
-            try
+            var marker = Path.Combine(_dataDirectory, "bundled-channels.json");
+            var previousRevision = AtomicStore.Read<string>(marker);
+            if (previousRevision == BundledChannels.Revision) return false;
+            var expanded = BundledChannels.AddMissing(config, out int added, previousRevision);
+            if (added > 0)
             {
-                var marker = Path.Combine(dataDirectory, "bundled-channels.json");
-                var previousRevision = AtomicStore.Read<string>(marker);
-                if (previousRevision != BundledChannels.Revision)
-                {
-                    var expanded = BundledChannels.AddMissing(_config, out int added, previousRevision);
-                    if (added > 0) StageConfiguration(expanded, mergeServiceProfiles: !_pendingConfiguration || _mergeServiceProfiles);
-                    var pending = BundledChannels.PendingCount(expanded, previousRevision);
-                    if (pending == 0) AtomicStore.Write(marker, BundledChannels.Revision);
-                    else _loadWarning = $"В каталоге обновления осталось {pending} каналов: достигнут предел 32. Существующие каналы сохранены; освободите место и перезапустите программу для добавления остальных.";
-                }
+                StageConfiguration(expanded, mergeServiceProfiles);
+                staged = true;
             }
-            catch (Exception ex)
-            { _loadWarning = "Не удалось дополнить каналы из поставки. Исходные каналы сохранены. " + ex.Message; }
+            var pending = BundledChannels.PendingCount(expanded, previousRevision);
+            if (pending == 0) AtomicStore.Write(marker, BundledChannels.Revision);
+            else _loadWarning = $"В каталоге обновления осталось {pending} каналов: достигнут предел 32. Существующие каналы сохранены; освободите место и перезапустите программу для добавления остальных.";
         }
+        catch (Exception ex)
+        { _loadWarning = "Не удалось дополнить каналы из поставки. Исходные каналы сохранены. " + ex.Message; }
+        return staged;
     }
 
     public async Task<AppStatus> ReconnectAsync()
@@ -229,6 +239,30 @@ public sealed class UiBackend : IAsyncDisposable
         {throw new TimeoutException("Служба не вернула диагностику за 3 секунды. Нажмите «Проверить связь» или повторите открытие канала.");}
         catch(IOException ex)
         {throw new InvalidOperationException("Не удалось прочитать диагностику службы. Нажмите «Проверить связь». "+ex.Message,ex);}
+        finally {if(entered)_gate.Release();}
+    }
+
+    public async Task<RelayDiagnosticsSnapshot> ReadRelayDiagnosticsAsync(CancellationToken token=default)
+    {
+        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(3)); bool entered=false;
+        try
+        {
+            await _gate.WaitAsync(timeout.Token); entered=true;
+            if(_disposed) throw new ObjectDisposedException(GetType().FullName);
+            if(!_connected) throw new IOException("Для наблюдения запросов посредника нужна связь со службой. Нажмите «Проверить связь». Локальная проверка канала не заменяет эти данные.");
+            if(!Version.TryParse(Status.ServiceVersion,out var version)||version<new Version(0,1,21))
+                throw new InvalidOperationException("Для диагностики посредника нужна служба 0.1.21 или новее. Нажмите «Обновить службу».");
+            var reply=await _service.SendAsync(new RpcRequest {Command="relay-diagnostics"},timeout.Token);
+            if(!reply.Ok) throw new IOException(reply.Error??"Служба не вернула диагностику посредника.");
+            var snapshot=reply.RelayDiagnostics??throw new IOException("Ответ не содержит наблюдений посредника. Проверьте версию службы.");
+            RelayDiagnostics.Validate(snapshot);
+            if(!ServiceClient.HasExpectedVersion(new AppStatus {ServiceVersion=snapshot.ServiceVersion},version))
+                throw new IOException("Версия диагностического ответа отличается от последнего состояния службы. Обновите состояние и повторите чтение.");
+            return JsonData.Clone(snapshot);
+        }
+        catch(OperationCanceledException) when(!token.IsCancellationRequested)
+        {throw new TimeoutException("Служба не вернула наблюдения посредника за 3 секунды. Сетевые запросы повторно не запускались.");}
         finally {if(entered)_gate.Release();}
     }
 
@@ -526,7 +560,10 @@ public sealed class UiBackend : IAsyncDisposable
             try
             {
                 var desired = ProfileSynchronization.ForConnection(_config, status.Config, _pendingConfiguration && !_mergeServiceProfiles);
-                if (_pendingConfiguration || !ProfileSynchronization.SameConfig(desired, status.Config)) StageConfiguration(desired);
+                // Saved profiles from both databases take precedence over new catalog entries.
+                if (!TryStageBundledChannels(desired, mergeServiceProfiles: false)
+                    && (_pendingConfiguration || !ProfileSynchronization.SameConfig(desired, status.Config)))
+                    StageConfiguration(desired);
             }
             catch (ArgumentException ex)
             {

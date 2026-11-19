@@ -96,6 +96,11 @@ public static class DnsWire
     }
 
     internal static void ValidateQuery(byte[] query) => _ = Parse(query, false);
+    internal static (ushort Id, ushort Type, ushort Class) QueryMetadata(byte[] query)
+    {
+        var message = Parse(query, false);
+        return (message.Id, message.Question.Type, message.Question.Class);
+    }
     internal static bool IsTruncated(byte[] packet) => packet.Length >= 4 && (packet[2] & 2) != 0;
     internal static int ResponseCode(byte[] response) => response[3] & 15;
 

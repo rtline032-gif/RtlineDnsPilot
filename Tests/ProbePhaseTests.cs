@@ -84,7 +84,7 @@ public static class ProbePhaseTests
             var result = await TlsFixture(stallHeaders: true);
             var attempt = result.Diagnostics!.Attempts.Single();
             Require(!result.Success && attempt.Tcp.State == "success" && attempt.Tls.State == "success" && attempt.Http.State == "timeout"
-                && attempt.HttpStatus is null, "A header stall became an earlier connection-phase failure.");
+                && attempt.HttpStatus is null, "A header stall became an earlier connection-phase failure. Observed: " + JsonData.Encode(result.Diagnostics));
         });
         await Check("IPv4 TLS failure survives a later IPv6 TCP error in the bounded service and aggregate status", async () =>
         {

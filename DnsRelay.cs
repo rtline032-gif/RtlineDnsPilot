@@ -4,11 +4,20 @@ using System.Net.Sockets;
 
 namespace NetPilot;
 
+internal interface IMonitorDnsRelay : IAsyncDisposable
+{
+    bool IsRunning { get; }
+    string? LastFailure { get; }
+    event Action? ListenerFailed;
+    Task StartAsync(int port, bool ipv6, CancellationToken token);
+}
+
 /// <summary>Loopback-only UDP/TCP forwarding, bounded to 64 requests/connections; never logs query names.</summary>
-public sealed class DnsRelay : IAsyncDisposable
+public sealed class DnsRelay : IAsyncDisposable, IMonitorDnsRelay
 {
     private readonly DnsTransport _transport;
     private readonly Func<ChannelProfile?> _getActive;
+    private readonly RelayDiagnosticsStore? _diagnostics;
     private readonly SemaphoreSlim _capacity = new(64, 64);
     private readonly object _sync = new();
     private readonly HashSet<Task> _pending = [];
@@ -18,15 +27,22 @@ public sealed class DnsRelay : IAsyncDisposable
     private CancellationTokenRegistration _closeOnCancellation;
     private volatile bool _running;
     private volatile string? _lastFailure;
+    private int _failureSignaled;
+    private event Action? ListenerFailed;
     private bool _disposed;
 
     public DnsRelay(DnsTransport transport, Func<ChannelProfile?> getActive)
+        : this(transport, getActive, null) { }
+
+    internal DnsRelay(DnsTransport transport, Func<ChannelProfile?> getActive, RelayDiagnosticsStore? diagnostics)
     {
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _getActive = getActive ?? throw new ArgumentNullException(nameof(getActive));
+        _diagnostics = diagnostics;
     }
     public bool IsRunning => _running && _lifetime is { IsCancellationRequested: false };
     public string? LastFailure => _lastFailure;
+    event Action? IMonitorDnsRelay.ListenerFailed { add => ListenerFailed += value; remove => ListenerFailed -= value; }
 
     public Task StartAsync(int port = 53, bool ipv6 = true, CancellationToken token = default)
     {
@@ -94,29 +110,37 @@ public sealed class DnsRelay : IAsyncDisposable
                 var query = buffer[..read.ReceivedBytes];
                 try { DnsWire.ValidateQuery(query); }
                 catch (InvalidDataException) { continue; } // Do not reflect responses, malformed packets, or unsupported opcodes.
+                var trace = _diagnostics?.Begin(query, "UDP", socket.AddressFamily);
                 if (!_capacity.Wait(0))
                 {
-                    try { await socket.SendToAsync(DnsWire.Failure(query), SocketFlags.None, peer, token).ConfigureAwait(false); }
+                    var failure = DnsWire.Failure(query); var queued = false;
+                    trace?.Failure("capacity", "CAPACITY"); trace?.Response(failure);
+                    try { await socket.SendToAsync(failure, SocketFlags.None, peer, token).ConfigureAwait(false); queued = true; }
                     catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset && !token.IsCancellationRequested) { }
+                    finally { trace?.Finish(queued); }
                     continue;
                 }
-                Track(ProcessDatagramAsync(socket, peer, query, token));
+                Track(ProcessDatagramAsync(socket, peer, query, token, trace));
             }
         }
         catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException || (ex is SocketException && token.IsCancellationRequested)) { }
         catch (SocketException ex) { StopOnListenerFailure(ex, "UDP " + socket.AddressFamily); }
     }
 
-    private async Task ProcessDatagramAsync(Socket socket, IPEndPoint peer, byte[] query, CancellationToken token)
+    private async Task ProcessDatagramAsync(Socket socket, IPEndPoint peer, byte[] query, CancellationToken token, RelayRequestTrace? trace)
     {
+        var queued = false;
         try
         {
-            var response = await ForwardAsync(query, token).ConfigureAwait(false);
+            var response = await ForwardAsync(query, token, trace).ConfigureAwait(false);
             if (response.Length > DnsWire.UdpPayloadSize(query)) response = DnsWire.Truncate(query, response);
+            trace?.Response(response);
             await socket.SendToAsync(response, SocketFlags.None, peer, token).ConfigureAwait(false);
+            queued = true;
         }
-        catch (Exception ex) when (ex is OperationCanceledException or SocketException or ObjectDisposedException or IOException or InvalidDataException) { }
-        finally { _capacity.Release(); }
+        catch (Exception ex) when (ex is OperationCanceledException or SocketException or ObjectDisposedException or IOException or InvalidDataException)
+        { trace?.Failure(trace.HasResponse ? "local-send" : "upstream", RelayDiagnostics.Error(ex, token.IsCancellationRequested)); }
+        finally { trace?.Finish(queued); _capacity.Release(); }
     }
 
     private async Task AcceptLoopAsync(Socket socket, CancellationToken token)
@@ -160,10 +184,18 @@ public sealed class DnsRelay : IAsyncDisposable
                     if (length < 12) throw new InvalidDataException("Слишком короткий DNS TCP запрос.");
                     var query = new byte[length]; await stream.ReadExactlyAsync(query, idle.Token).ConfigureAwait(false);
                     DnsWire.ValidateQuery(query);
-                    var response = await ForwardAsync(query, lifetime.Token).ConfigureAwait(false);
-                    BinaryPrimitives.WriteUInt16BigEndian(prefix, (ushort)response.Length);
-                    await stream.WriteAsync(prefix, lifetime.Token).ConfigureAwait(false);
-                    await stream.WriteAsync(response, lifetime.Token).ConfigureAwait(false);
+                    var trace = _diagnostics?.Begin(query, "TCP", client.AddressFamily); var queued = false;
+                    try
+                    {
+                        var response = await ForwardAsync(query, lifetime.Token, trace).ConfigureAwait(false);
+                        trace?.Response(response);
+                        BinaryPrimitives.WriteUInt16BigEndian(prefix, (ushort)response.Length);
+                        await stream.WriteAsync(prefix, lifetime.Token).ConfigureAwait(false);
+                        await stream.WriteAsync(response, lifetime.Token).ConfigureAwait(false); queued = true;
+                    }
+                    catch (Exception ex) when (ex is OperationCanceledException or SocketException or ObjectDisposedException or IOException or InvalidDataException)
+                    { trace?.Failure(trace.HasResponse ? "local-send" : "upstream", RelayDiagnostics.Error(ex, token.IsCancellationRequested)); throw; }
+                    finally { trace?.Finish(queued); }
                 }
             }
             catch (Exception ex) when (ex is OperationCanceledException or SocketException or ObjectDisposedException or IOException or InvalidDataException) { }
@@ -171,19 +203,22 @@ public sealed class DnsRelay : IAsyncDisposable
         }
     }
 
-    private async Task<byte[]> ForwardAsync(byte[] query, CancellationToken token)
+    private async Task<byte[]> ForwardAsync(byte[] query, CancellationToken token, RelayRequestTrace? trace)
     {
         try
         {
             var profile = _getActive();
-            if (profile == null) return DnsWire.Failure(query);
-            var response = await _transport.ExchangeAsync(profile, query, token).ConfigureAwait(false);
+            if (profile == null) { trace?.Failure("selection", "NO_ACTIVE_PROFILE"); return DnsWire.Failure(query); }
+            trace?.Profile(profile);
+            var response = trace is null ? await _transport.ExchangeAsync(profile, query, token).ConfigureAwait(false)
+                : await _transport.ExchangeObservedAsync(profile, query, token, trace.Upstream).ConfigureAwait(false);
             DnsWire.ValidateResponse(query, response);
             return response;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch (Exception ex) when (ex is IOException or InvalidDataException or HttpRequestException or SocketException or OperationCanceledException or ArgumentException or ObjectDisposedException)
         {
+            trace?.Failure("upstream", RelayDiagnostics.Error(ex, token.IsCancellationRequested));
             return DnsWire.Failure(query);
         }
     }
@@ -200,9 +235,11 @@ public sealed class DnsRelay : IAsyncDisposable
 
     private void StopOnListenerFailure(SocketException error, string listener)
     {
+        if (Interlocked.Exchange(ref _failureSignaled, 1) != 0) return;
         _lastFailure = listener + ": " + error.SocketErrorCode + " (" + error.NativeErrorCode + ")";
         _running = false;
         try { _lifetime?.Cancel(); } catch (ObjectDisposedException) { }
+        ListenerFailed?.Invoke();
     }
 
     public async ValueTask DisposeAsync()

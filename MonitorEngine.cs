@@ -4,6 +4,10 @@ namespace NetPilot;
 
 public sealed class MonitorEngine : IAsyncDisposable
 {
+    private const int FailuresBeforeSlowing = 3;
+    private static readonly TimeSpan MinimumFailureDuration = TimeSpan.FromMinutes(2);
+    private const int MinimumSlowIntervalSeconds = 10 * 60;
+    private const int SlowIntervalMultiplier = 5;
     private readonly object _state = new();
     private readonly SemaphoreSlim _operations = new(1,1);
     private readonly string _directory;
@@ -17,7 +21,11 @@ public sealed class MonitorEngine : IAsyncDisposable
     private string? _chartWarning;
     private string? _chartWriteWarning;
     private readonly DnsSessionManager? _dns;
-    private DnsRelay? _relay;
+    private readonly RelayDiagnosticsStore _relayDiagnostics = new();
+    private readonly Func<IMonitorDnsRelay> _relayFactory;
+    private readonly Action _flushDnsCache;
+    private IMonitorDnsRelay? _relay;
+    private bool _relayRecoveryPending;
     private CancellationTokenSource? _cancel;
     private CancellationTokenSource? _roundCancel;
     private Task? _loop;
@@ -42,6 +50,8 @@ public sealed class MonitorEngine : IAsyncDisposable
         if (!serviceMode) _config.ManagementRequested=false;
         _probe=new ProfileProbe(_transport);
         _check=_probe.CheckAsync;
+        _relayFactory=()=>new DnsRelay(_transport,CurrentProfile,_relayDiagnostics);
+        _flushDnsCache=DnsCache.Flush;
         _chartPath=Path.Combine(_directory,"chart-history.json");
         if(serviceMode) _dns=new DnsSessionManager(_directory);
         _stats=AtomicStore.Read<List<ProfileStats>>(Path.Combine(_directory,"statistics.json")) ?? [];
@@ -68,6 +78,17 @@ public sealed class MonitorEngine : IAsyncDisposable
     internal MonitorEngine(AppConfig config,string dataDirectory,bool serviceMode,
         Func<ChannelProfile,string,TimeSpan,CancellationToken,Task<ProbeResult>> check) : this(config,dataDirectory,serviceMode)
     { _check=check??throw new ArgumentNullException(nameof(check)); }
+
+    internal MonitorEngine(AppConfig config,string dataDirectory,bool serviceMode,
+        Func<ChannelProfile,string,TimeSpan,CancellationToken,Task<ProbeResult>> check,
+        DnsSessionManager dns,Func<IMonitorDnsRelay> relayFactory,Action flushDnsCache)
+        : this(config,dataDirectory,serviceMode,check)
+    {
+        if(!serviceMode) throw new ArgumentException("Подмена DNS-платформы предназначена только для режима службы.",nameof(serviceMode));
+        _dns=dns??throw new ArgumentNullException(nameof(dns));
+        _relayFactory=relayFactory??throw new ArgumentNullException(nameof(relayFactory));
+        _flushDnsCache=flushDnsCache??throw new ArgumentNullException(nameof(flushDnsCache));
+    }
 
     private void LoadChartHistory()
     {
@@ -120,6 +141,19 @@ public sealed class MonitorEngine : IAsyncDisposable
             _serviceMode?"Служба RtlineDnsPilot":"Локальное наблюдение");
     }
 
+    public RelayDiagnosticsSnapshot GetRelayDiagnostics()
+    {
+        lock(_state)
+        {
+            var snapshot=_relayDiagnostics.Snapshot();
+            snapshot.ServiceVersion=AppVersion.Current; snapshot.ServiceMode=_serviceMode;
+            snapshot.RelayRunning=_relay?.IsRunning==true; snapshot.SystemDnsManaged=_dns?.Managed==true;
+            snapshot.RecoveryPending=_relayRecoveryPending || _dns is {HasJournal:true,Managed:false};
+            snapshot.ActiveProfileId=_active;
+            return snapshot;
+        }
+    }
+
     public async Task StartAsync()
     {
         if (_monitoring) return;
@@ -138,14 +172,20 @@ public sealed class MonitorEngine : IAsyncDisposable
     {
         while(!token.IsCancellationRequested)
         {
-            bool requested=Interlocked.Exchange(ref _probeRequested,0)!=0;
-            bool paused;lock(_state) paused=_paused;
-            if(paused && !requested)
+            bool paused;
+            try
             {
-                try {await Task.Delay(250,token);}catch(OperationCanceledException){break;}
-                continue;
+                // Safety remains active even when ordinary probes and automatic selection are paused.
+                await CheckRelaySafetyAsync(token);
+                bool requested=Interlocked.Exchange(ref _probeRequested,0)!=0;
+                lock(_state) paused=_paused;
+                if(paused && !requested)
+                {
+                    await Task.Delay(250,token);
+                    continue;
+                }
+                await ProbeNowCoreAsync(requested);
             }
-            try { await ProbeNowCoreAsync(requested); }
             catch(OperationCanceledException) when(token.IsCancellationRequested) { break; }
             catch(OperationCanceledException) { } // An explicit pause/configure/disable interrupted this round.
             catch(Exception ex) { lock(_state) _error=ex.Message; AddEvent("error",ex.Message); }
@@ -154,6 +194,7 @@ public sealed class MonitorEngine : IAsyncDisposable
             {
                 for(int i=0;i<seconds*2;i++)
                 {
+                    await CheckRelaySafetyAsync(token);
                     bool expired;lock(_state) expired=_config.ManualProfileId is not null && _config.ManualUntil<=DateTimeOffset.UtcNow;
                     lock(_state) paused=_paused;
                     if(expired || Volatile.Read(ref _probeRequested)!=0 || paused) break;
@@ -164,15 +205,67 @@ public sealed class MonitorEngine : IAsyncDisposable
         }
     }
 
-    public Task ProbeNowAsync()=>ProbeNowCoreAsync(allowWhilePaused:true);
-    private async Task ProbeNowCoreAsync(bool allowWhilePaused)
+    public Task ProbeNowAsync()=>ProbeNowCoreAsync(requested:true);
+    internal async Task ProbeNowCoreAsync(bool requested)
     {
         var token=_cancel?.Token ?? CancellationToken.None;
         await _operations.WaitAsync(token);
-        using var round=CancellationTokenSource.CreateLinkedTokenSource(token);
-        lock(_state) {_roundCancel=round;if(_paused&&!allowWhilePaused)round.Cancel();}
-        try { await ProbeRoundAsync(round.Token); }
-        finally {lock(_state) _roundCancel=null;_operations.Release();}
+        try
+        {
+            await CheckRelaySafetyCoreAsync();
+            using var round=CancellationTokenSource.CreateLinkedTokenSource(token);
+            lock(_state)
+            {
+                _roundCancel=round;
+                if((_paused&&!requested) || (!_relayRecoveryPending && _dns?.Managed==true && _relay is not {IsRunning:true})) round.Cancel();
+            }
+            try { await ProbeRoundAsync(round.Token, checkAll:requested); }
+            finally {lock(_state) _roundCancel=null;}
+        }
+        finally {_operations.Release();}
+    }
+
+    private void OnRelayListenerFailed() => CancelRound();
+
+    private async Task CheckRelaySafetyAsync(CancellationToken token)
+    {
+        if(!_serviceMode) return;
+        await _operations.WaitAsync(token);
+        try { await CheckRelaySafetyCoreAsync(); }
+        finally { _operations.Release(); }
+    }
+
+    // Caller holds _operations. A failed attempt is latched until an explicit Restore/Disable,
+    // including when DnsSessionManager has already moved from Managed to its retained journal.
+    private async Task<bool> CheckRelaySafetyCoreAsync()
+    {
+        if(_dns?.Managed!=true || _relay is {IsRunning:true} || _relayRecoveryPending) return false;
+        string? failure=_relay?.LastFailure;
+        lock(_state) { _relayRecoveryPending=true; _config.ManagementRequested=false; }
+        // Retire automatic activation before restoring ownership. A configuration-write failure
+        // must not prevent the DNS safety attempt; retain an explicit warning for a manual retry.
+        string? saveWarning=null;
+        try { SaveConfig(); }
+        catch(Exception ex)
+        {
+            saveWarning=" Выключение управления не сохранено. Перед перезапуском повторите «Отключить управление / восстановить DNS». "+ex.Message;
+        }
+        try
+        {
+            await RestoreRelayAsync();
+            lock(_state) _error="Локальный DNS-посредник остановился; исходный DNS восстановлен."+(failure is null?"":" Причина: "+failure);
+        }
+        catch(Exception ex)
+        {
+            lock(_state) _error="Локальный DNS-посредник остановился; восстановление DNS не завершено. Нажмите «Отключить управление / восстановить DNS» для повторной попытки. "
+                +ex.Message+(failure is null?"":" Причина остановки: "+failure);
+        }
+        if(saveWarning is not null) { lock(_state) _error+=saveWarning; }
+        AddEvent("error",_error!);
+        try { SaveMeasurements(); }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        { lock(_state) _error+=" Не удалось сохранить журнал событий: "+ex.Message; }
+        return true;
     }
 
     private void CancelRound()
@@ -198,14 +291,30 @@ public sealed class MonitorEngine : IAsyncDisposable
         if(!_monitoring) await StartAsync();
     }
 
-    private async Task ProbeRoundAsync(CancellationToken token)
+    private async Task ProbeRoundAsync(CancellationToken token, bool checkAll = true)
     {
         AppConfig config;bool expired;
-        lock(_state) {expired=ExpireManualLocked(DateTimeOffset.UtcNow);config=JsonData.Clone(_config);}
+        ChannelProfile[] enabled, deferred;
+        lock(_state)
+        {
+            var now=DateTimeOffset.UtcNow;
+            expired=ExpireManualLocked(now);
+            config=JsonData.Clone(_config);
+            enabled=config.Profiles.Where(profile=>profile.Enabled).ToArray();
+            deferred=checkAll?[]:DeferredProfilesLocked(config,enabled,now);
+        }
         if(expired) SaveConfig();
-        var results=await MonitoringTargets.CheckAsync(config,_check,token);
+        var due=deferred.Length==0?enabled:enabled.Except(deferred).ToArray();
+        var results=await MonitoringTargets.CheckAsync(config,due,_check,token);
+        // When the last working channel fails, measure the reserves before
+        // deciding on a switch or declaring an outage.
+        if(deferred.Length>0 && !results.Any(result=>result.Success))
+            results.AddRange(await MonitoringTargets.CheckAsync(config,deferred,_check,token));
         token.ThrowIfCancellationRequested();
-        SelectionDecision decision;
+        bool hasSuccess=results.Any(result=>result.Success);
+        // A full round is direct evidence of an outage even if the earliest
+        // failure aged past the selection window during the reserve probes.
+        bool allUnavailable=!hasSuccess && results.Count==enabled.Length;
         lock(_state)
         {
             // Record the completed measurements before the selection window trims
@@ -221,29 +330,23 @@ public sealed class MonitorEngine : IAsyncDisposable
                 s.Add(r);
             }
             _stats.RemoveAll(s=>!config.Profiles.Any(p=>p.Id==s.ProfileId));
-            decision=Selection.Choose(config,_stats,_active,_switched,DateTimeOffset.UtcNow);
+            var decision=Selection.Choose(config,_stats,_active,_switched,DateTimeOffset.UtcNow);
             _selectionReason=decision.Reason;
             if(decision.ProfileId!=_active)
             {
                 var old=_active; _active=decision.ProfileId; _switched=DateTimeOffset.UtcNow;
                 AddEventLocked("switch", decision.Reason+": "+(config.Profiles.FirstOrDefault(p=>p.Id==_active)?.Name??"нет канала"));
-                if(_dns?.Managed==true) DnsCache.Flush();
+                if(_dns?.Managed==true) _flushDnsCache();
             }
-            if(decision.AllUnavailable && !_allUnavailable) AddEventLocked("outage","Все включённые каналы не прошли проверки выбранных сервисов.");
-            if(!decision.AllUnavailable && _allUnavailable && results.Any(r=>r.Success)) AddEventLocked("recovered","Доступность HTTPS восстановлена.");
-            _allUnavailable=decision.AllUnavailable;
-            _allDownRounds=decision.AllUnavailable?_allDownRounds+1:0;
+            if(allUnavailable && !_allUnavailable) AddEventLocked("outage","Все включённые каналы не прошли проверки выбранных сервисов.");
+            if(hasSuccess && _allUnavailable) AddEventLocked("recovered","Доступность HTTPS восстановлена.");
+            _allUnavailable=allUnavailable;
+            _allDownRounds=allUnavailable?_allDownRounds+1:0;
         }
-        if(_serviceMode && _config.ManagementRequested)
+        bool relayRecovered=await CheckRelaySafetyCoreAsync();
+        if(_serviceMode && _config.ManagementRequested && !_relayRecoveryPending && !relayRecovered)
         {
-            if(_dns!.Managed && _relay is { IsRunning:false })
-            {
-                var failure = _relay.LastFailure;
-                await RestoreRelayAsync();
-                lock(_state) _error="Локальный DNS-посредник остановился; исходный DNS восстановлен." + (failure is null ? "" : " Причина: " + failure);
-                AddEvent("error",_error!);
-            }
-            else if(_allDownRounds>=3 && _dns.Managed && !MonitoringTargets.ManualIsActive(_config,DateTimeOffset.UtcNow))
+            if(_allDownRounds>=3 && _dns!.Managed && !MonitoringTargets.ManualIsActive(_config,DateTimeOffset.UtcNow))
             {
                 await RestoreRelayAsync();
                 AddEvent("fallback","Все каналы недоступны три раунда. Возвращён исходный DNS; продолжаем наблюдение.");
@@ -255,6 +358,29 @@ public sealed class MonitorEngine : IAsyncDisposable
             }
         }
         SaveMeasurements();
+    }
+
+    private ChannelProfile[] DeferredProfilesLocked(AppConfig config, ChannelProfile[] enabled, DateTimeOffset now)
+    {
+        var key=MonitoringTargets.Key(config);
+        var statistics=_stats.Where(stats=>stats.Last?.MonitoringKey==key).ToArray();
+        var freshness=TimeSpan.FromSeconds(MonitoringTargets.FreshnessSeconds(config));
+        bool hasWorkingChannel=enabled.Any(profile=>statistics.Any(stats=>stats.ProfileId==profile.Id
+            && stats.Last is { Success:true } last && last.At<=now && now-last.At<=freshness));
+        if(!hasWorkingChannel) return [];
+
+        var slowInterval=TimeSpan.FromSeconds(Math.Max(MinimumSlowIntervalSeconds,config.IntervalSeconds*SlowIntervalMultiplier));
+        var deferred=new List<ChannelProfile>();
+        foreach(var profile in enabled)
+        {
+            if(profile.Id==_active || profile.Id==config.ManualProfileId) continue;
+            var stats=statistics.FirstOrDefault(stats=>stats.ProfileId==profile.Id);
+            if(stats is not { ConsecutiveFailures:>=FailuresBeforeSlowing, Last:{ Success:false } last }
+                || last.At>now || now-last.At>=slowInterval) continue;
+            int firstFailure=Math.Max(0,stats.Samples.Count-stats.ConsecutiveFailures);
+            if(last.At-stats.Samples[firstFailure].At>=MinimumFailureDuration) deferred.Add(profile);
+        }
+        return deferred.ToArray();
     }
 
     private bool CurrentHealthy()
@@ -272,8 +398,10 @@ public sealed class MonitorEngine : IAsyncDisposable
     private async Task ActivateRelayAsync(CancellationToken token)
     {
         if(_dns==null || !CurrentHealthy()) throw new InvalidOperationException("Сначала нужен канал с успешной проверкой HTTPS.");
+        if(_relayRecoveryPending) throw new InvalidOperationException("Сначала завершите восстановление DNS после остановки посредника.");
         if(!Guid.TryParse(_config.AdapterId,out _)) throw new InvalidOperationException("Выберите физический сетевой адаптер.");
-        _relay=new DnsRelay(_transport,CurrentProfile);
+        _relay=_relayFactory();
+        _relay.ListenerFailed+=OnRelayListenerFailed;
         try
         {
             token.ThrowIfCancellationRequested();
@@ -282,13 +410,13 @@ public sealed class MonitorEngine : IAsyncDisposable
             await _relay.StartAsync(53,System.Net.Sockets.Socket.OSSupportsIPv6,CancellationToken.None);
             token.ThrowIfCancellationRequested();
             await _dns.EnableAsync(_config.AdapterId);
-            DnsCache.Flush();
+            _flushDnsCache();
             AddEvent("managed","DNS выбранного адаптера направлен в локальный посредник.");
         }
         catch
         {
             if(_dns.HasJournal) await _dns.RestoreAsync();
-            if(_relay!=null) { await _relay.DisposeAsync(); _relay=null; }
+            await DisposeRelayAsync();
             throw;
         }
     }
@@ -298,8 +426,17 @@ public sealed class MonitorEngine : IAsyncDisposable
         // The manager also detects a journal lost DURING a managed session; HasJournal
         // alone must never turn that case into a successful no-op restoration.
         if(_dns!=null) await _dns.RestoreAsync();
-        if(_relay!=null) { await _relay.DisposeAsync(); _relay=null; }
-        if(_serviceMode) DnsCache.Flush();
+        await DisposeRelayAsync();
+        if(_serviceMode) _flushDnsCache();
+        lock(_state) _relayRecoveryPending=false;
+    }
+
+    private async Task DisposeRelayAsync()
+    {
+        if(_relay is null) return;
+        _relay.ListenerFailed-=OnRelayListenerFailed;
+        await _relay.DisposeAsync();
+        _relay=null;
     }
 
     public async Task SetManagementAsync(bool enabled)
@@ -311,6 +448,7 @@ public sealed class MonitorEngine : IAsyncDisposable
         {
             if(enabled)
             {
+                if(_relayRecoveryPending) throw new InvalidOperationException("Сначала завершите восстановление DNS после остановки посредника.");
                 if(_dns!.Managed) return;
                 if(_dns.HasJournal) throw new InvalidOperationException("Сначала восстановите незавершённый сеанс DNS.");
                 if(!CurrentHealthy()) await ProbeRoundAsync(_cancel?.Token ?? CancellationToken.None);
@@ -375,7 +513,7 @@ public sealed class MonitorEngine : IAsyncDisposable
                 }
                 else if(manualChanged) {_selectionReason="Ручная фиксация снята; ожидается решение автовыбора.";AddEventLocked("auto","Ручная фиксация снята; включён автоматический выбор.");}
             }
-            if(manualChanged && _dns?.Managed==true) DnsCache.Flush();
+            if(manualChanged && _dns?.Managed==true) _flushDnsCache();
             SaveConfig(); Interlocked.Exchange(ref _probeRequested,1);
         }
         finally { _operations.Release(); }
@@ -401,10 +539,11 @@ public sealed class MonitorEngine : IAsyncDisposable
         {
             var status=new AppStatus
             {
-                ServiceVersion=_serviceMode?AppVersion.Current:"",ServiceConnected=_serviceMode,Monitoring=_monitoring&&!_paused,SystemDnsManaged=_dns?.Managed==true,DnsRecoveryPending=_dns is {HasJournal:true,Managed:false},
+                ServiceVersion=_serviceMode?AppVersion.Current:"",ServiceConnected=_serviceMode,Monitoring=_monitoring&&!_paused,SystemDnsManaged=_dns?.Managed==true,
+                DnsRecoveryPending=_relayRecoveryPending || _dns is {HasJournal:true,Managed:false},
                 AllUnavailable=_allUnavailable,ActiveProfileId=_active,Error=_error,Config=JsonData.Clone(_config),
                 Statistics=StatusProjection.Statistics(_stats),Events=StatusProjection.Events(_events),SelectionReason=_paused?"Проверки и автоматический выбор приостановлены; текущий канал сохранён.":_selectionReason,
-                State=_dns is {HasJournal:true,Managed:false}?"Восстановление DNS не завершено":_dns?.Managed==true?"Системный DNS под управлением":_config.ManagementRequested?"Ожидание канала; исходный DNS сохранён":_monitoring?"Наблюдение; DNS не изменён":"Наблюдение остановлено"
+                State=_relayRecoveryPending || _dns is {HasJournal:true,Managed:false}?"Восстановление DNS не завершено":_dns?.Managed==true?"Системный DNS под управлением":_config.ManagementRequested?"Ожидание канала; исходный DNS сохранён":_monitoring?"Наблюдение; DNS не изменён":"Наблюдение остановлено"
             };
             if(MonitoringTargets.ManualIsActive(_config,DateTimeOffset.UtcNow)
                 && MonitoringTargets.View(_stats.FirstOrDefault(s=>s.ProfileId==_active),_config)?.Last is {Success:false})

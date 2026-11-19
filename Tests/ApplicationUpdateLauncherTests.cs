@@ -161,6 +161,118 @@ public static class ApplicationUpdateLauncherTests
             Require(await f.Launcher.CompleteAsync(request) == 0, "Correct staged startup acknowledgement was refused.");
             await Reject(() => { f.Launcher.AcknowledgeStartup(Path.Combine(f.Data, "not-an-ack.json")); return Task.CompletedTask; });
         });
+        await Check("rollback requires the last completed update for the same application data", async f =>
+        {
+            await Reject(() => { f.Launcher.GetRollbackVersion(f.Data); return Task.CompletedTask; });
+            string forward = await f.CompleteForwardAsync();
+            Require(f.Launcher.GetRollbackVersion(f.Data) == AppVersion.Current, "Rollback did not choose the actual previous application.");
+            await Reject(() => Task.FromResult(f.Launcher.PrepareRollback(f.Old, AppVersion.Current)));
+            File.Delete(Path.Combine(Path.GetDirectoryName(forward)!, "startup-ready.json"));
+            await Reject(() => Task.FromResult(f.Launcher.PrepareRollback(f.Data, AppVersion.Current)));
+        });
+        await Check("rollback switches the installed service before opening the previous window and survives relaunch", async f =>
+        {
+            string forward = await f.CompleteForwardAsync();
+            string observer = Path.Combine(f.Data, "observer");
+            Directory.CreateDirectory(observer);
+            File.WriteAllText(Path.Combine(observer, "statistics.json"), "latest diagnostics");
+            string pointerPath = Path.Combine(f.Root, "current.json");
+            string pointer = File.ReadAllText(pointerPath);
+            string rollback = f.Launcher.PrepareRollback(f.Data, AppVersion.Current);
+            f.Launcher.StartRollbackWorker(rollback);
+            Require(f.Host.Starts.Last().Executable == Path.Combine(f.Stage, "RtlineDnsPilot.exe")
+                && f.Host.Starts.Last().Args.SequenceEqual(new[] { "--complete-application-rollback", rollback }),
+                "The rollback worker was not launched from the validated current package.");
+            Require(await f.Launcher.CompleteRollbackAsync(rollback) == 0
+                && f.Host.Events.SequenceEqual(new[] { "parent-exit", "service-rollback", "previous-window" }),
+                "Rollback changed the service or application outside the required order.");
+            Require(File.ReadAllText(pointerPath) == pointer, "Explicit rollback changed the forward updater pointer.");
+            var nextStart = new ApplicationUpdateLauncher(f.Root, f.Host, f.ValidatePackage);
+            Require(nextStart.TryLaunchRollback([], f.Data, out var warning) && warning is null
+                && f.Host.Starts.Last().Args.Contains("--skip-update-route")
+                && f.Host.Starts.Last().Executable == Path.Combine(Path.GetDirectoryName(forward)!, "previous", "RtlineDnsPilot", "RtlineDnsPilot.exe"),
+                "The restarted launcher did not route to the verified previous snapshot.");
+            Require(!nextStart.TryLaunchRollback(["--service"], f.Data, out _)
+                && !nextStart.TryLaunchRollback([], f.Old, out _), "Rollback routed another application mode or settings directory.");
+            string backup = Directory.EnumerateDirectories(Path.GetDirectoryName(forward)!, "rollback-data-*").Single();
+            Require(File.ReadAllText(Path.Combine(backup, "observer", "statistics.json")) == "latest diagnostics",
+                "Recent diagnostics were not backed up before starting the older writer.");
+            f.UserDataIntact();
+        });
+        await Check("rollback without an installed service leaves the system untouched", async f =>
+        {
+            f.Host.ServiceInstalled = false;
+            await f.CompleteForwardAsync();
+            string rollback = f.Launcher.PrepareRollback(f.Data, AppVersion.Current);
+            Require(await f.Launcher.CompleteRollbackAsync(rollback) == 0
+                && f.Host.Events.SequenceEqual(new[] { "parent-exit", "previous-window" }),
+                "Observer-only rollback contacted a system service.");
+        });
+        await Check("tampered rollback backup is refused before a switch", async f =>
+        {
+            string forward = await f.CompleteForwardAsync();
+            string rollback = f.Launcher.PrepareRollback(f.Data, AppVersion.Current);
+            File.AppendAllText(Path.Combine(Path.GetDirectoryName(forward)!, "previous", "RtlineDnsPilot", "RtlineDnsPilot.dll"), "tampered");
+            await Reject(() => { f.Launcher.StartRollbackWorker(rollback); return Task.CompletedTask; });
+            Require(await f.Launcher.CompleteRollbackAsync(rollback) != 0 && f.Host.Events.Count == 0 && f.Host.Starts.Count == 0,
+                "Damaged rollback files were used to start a process or change a service.");
+        });
+        await Check("failed service rollback leaves the current GUI selected without retrying elevation", async f =>
+        {
+            await f.CompleteForwardAsync();
+            f.Host.RollbackError = new IOException("fixture refused protected snapshot");
+            string rollback = f.Launcher.PrepareRollback(f.Data, AppVersion.Current);
+            Require(await f.Launcher.CompleteRollbackAsync(rollback) != 0
+                && f.Host.Events.SequenceEqual(new[] { "parent-exit", "service-rollback" })
+                && f.Host.Starts.Last().Executable == Path.Combine(f.Stage, "RtlineDnsPilot.exe"),
+                "A refused service rollback launched the old application or retried elevation.");
+            Require(!f.Launcher.TryLaunchRollback([], f.Data, out _), "A failed rollback was selected for another launch.");
+        });
+        await Check("failed previous window startup repairs the current service and restores the current GUI", async f =>
+        {
+            await f.CompleteForwardAsync();
+            f.Host.PreviousReady = false;
+            string rollback = f.Launcher.PrepareRollback(f.Data, AppVersion.Current);
+            Require(await f.Launcher.CompleteRollbackAsync(rollback) != 0
+                && f.Host.Events.SequenceEqual(new[] { "parent-exit", "service-rollback", "previous-window", "service-install" })
+                && f.Host.Starts.Last().Executable == Path.Combine(f.Stage, "RtlineDnsPilot.exe")
+                && !f.Launcher.TryLaunchRollback([], f.Data, out _), "A failed previous window startup left the rollback selected.");
+            f.UserDataIntact();
+        });
+        await Check("unconfirmed service replacement restores the current service before reopening the GUI", async f =>
+        {
+            await f.CompleteForwardAsync();
+            f.Host.RollbackError = new ServiceRollbackConfirmationException("fixture service status missing after replacement");
+            string rollback = f.Launcher.PrepareRollback(f.Data, AppVersion.Current);
+            Require(await f.Launcher.CompleteRollbackAsync(rollback) != 0
+                && f.Host.Events.SequenceEqual(new[] { "parent-exit", "service-rollback", "service-install" })
+                && f.Host.Starts.Last().Executable == Path.Combine(f.Stage, "RtlineDnsPilot.exe"),
+                "The current service was not restored after an unconfirmed replacement.");
+        });
+        await Check("a simultaneous update or a still-running GUI leaves rollback uncommitted", async f =>
+        {
+            await f.CompleteForwardAsync();
+            string rollback = f.Launcher.PrepareRollback(f.Data, AppVersion.Current);
+            using (var lease = new FileStream(Path.Combine(f.Root, ".completion.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+                Require(await f.Launcher.CompleteRollbackAsync(rollback) != 0 && f.Host.Events.Count == 0,
+                    "Rollback ignored the existing application update lock.");
+            f.Host.ParentError = new TimeoutException("fixture parent stayed running");
+            Require(await f.Launcher.CompleteRollbackAsync(rollback) != 0 && f.Host.Events.SequenceEqual(new[] { "parent-exit" })
+                && !f.Launcher.TryLaunchRollback([], f.Data, out _), "Rollback switched package before the parent closed.");
+        });
+        await Check("a newer completed update makes the former rollback selection stale", async f =>
+        {
+            await f.CompleteForwardAsync();
+            string rollback = f.Launcher.PrepareRollback(f.Data, AppVersion.Current);
+            Require(await f.Launcher.CompleteRollbackAsync(rollback) == 0, "Fixture rollback failed.");
+            var newer = f.NewStage("100.0.0");
+            string update = await f.Launcher.PrepareAsync(newer, f.Old, f.Data, false);
+            f.BeginWorker(update);
+            Require(await f.Launcher.CompleteAsync(update) == 0, "Fixture update after rollback failed.");
+            f.Host.ApplicationDirectory = newer.DirectoryPath;
+            f.Host.ApplicationVersion = newer.Release.Version;
+            Require(!f.Launcher.TryLaunchRollback([], f.Data, out _), "Previous rollback intercepted a new completed update.");
+        });
     }
 
     private static readonly string[] Runtime = ["RtlineDnsPilot.exe", "RtlineDnsPilot.dll", "RtlineDnsPilot.deps.json", "RtlineDnsPilot.runtimeconfig.json"];
@@ -194,6 +306,22 @@ public static class ApplicationUpdateLauncherTests
         }
         public Task<string> Prepare(bool updateService = true) => Launcher.PrepareAsync(Update, Old, Data, updateService);
         public void BeginWorker(string request) { Launcher.StartCompletionWorker(request); Host.ApplicationDirectory = Path.GetDirectoryName(Host.Starts.Last().Executable)!; }
+        public async Task<string> CompleteForwardAsync()
+        {
+            string request = await Prepare(Host.ServiceInstalled);
+            BeginWorker(request);
+            Host.OnNewWindow = ack =>
+            {
+                Host.ApplicationDirectory = Stage;
+                Launcher.AcknowledgeStartup(ack);
+                return true;
+            };
+            Require(await Launcher.CompleteAsync(request) == 0, "Fixture forward update failed.");
+            Host.OnNewWindow = null;
+            Host.ApplicationVersion = Update.Release.Version;
+            Host.Events.Clear(); Host.Starts.Clear();
+            return request;
+        }
         public void ValidatePackage(string directory, string version)
         {
             Require(Version.TryParse(version, out _), "Malformed version reached package validation.");
@@ -211,20 +339,35 @@ public static class ApplicationUpdateLauncherTests
         public long ProcessStartUtcTicks => new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks;
         public bool ServiceInstalled { get; set; } = true;
         public string ApplicationDirectory { get; set; } = "";
+        public string ApplicationVersion { get; set; } = AppVersion.Current;
         public List<string> Events { get; } = [];
         public List<(string Executable, string[] Args)> Starts { get; } = [];
         public Exception? ParentError { get; set; }
         public Task? PendingParentExit { get; set; }
         public Exception? InstallError { get; set; }
+        public Exception? RollbackError { get; set; }
         public bool Ready { get; set; } = true;
+        public bool PreviousReady { get; set; } = true;
         public Func<string, bool>? OnNewWindow { get; set; }
         public Task WaitForProcessExitAsync(int processId, long startUtcTicks, CancellationToken token)
         { Require(processId == ProcessId && startUtcTicks == ProcessStartUtcTicks, "Wrong parent identity."); Events.Add("parent-exit"); return ParentError is null ? PendingParentExit ?? Task.CompletedTask : Task.FromException(ParentError); }
         public Task InstallServiceAsync(string packageDirectory, CancellationToken token)
         { Events.Add("service-install"); return InstallError is null ? Task.CompletedTask : Task.FromException(InstallError); }
+        public Task<bool> RollbackServiceAsync(string previousVersion, CancellationToken token)
+        {
+            Require(previousVersion == AppVersion.Current, "Service rollback requested the wrong version.");
+            Events.Add("service-rollback");
+            return RollbackError is null ? Task.FromResult(true) : Task.FromException<bool>(RollbackError);
+        }
         public void Start(string executable, IReadOnlyList<string> arguments) => Starts.Add((executable, arguments.ToArray()));
         public Task<bool> LaunchAndWaitForReadyAsync(string executable, string dataDirectory, string ackPath, CancellationToken token)
         { Events.Add("new-window"); return Task.FromResult(OnNewWindow?.Invoke(ackPath) ?? Ready); }
+        public Task<bool> LaunchPreviousAndWaitForReadyAsync(string executable, string previousVersion, string dataDirectory, Action selectVersion, CancellationToken token)
+        {
+            Events.Add("previous-window");
+            if (PreviousReady) selectVersion();
+            return Task.FromResult(PreviousReady);
+        }
     }
     private static void Require(bool value, string error) { if (!value) throw new InvalidOperationException(error); }
     private static async Task Reject(Func<Task> action)

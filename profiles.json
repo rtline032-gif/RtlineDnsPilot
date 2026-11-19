@@ -326,5 +326,78 @@
     "DnsPort": 53,
     "DohUrl": "https://dns.commonnet.work/dns-query",
     "Note": "https://github.com/ASTRACAT2022/host-DNS/blob/main/README.md; bootstrap observed via OS resolver 2026-11-16, HTTPS certificate validation retained Срез публичных проверок 16.11.2026 с одного ПК: ChatGPT HTTP 200 0/2; Gemini /app HTTP 200 0/1. В этом файле выключен после неуспешной проверки; при необходимости можно включить вручную. Успех публичного HTTPS не подтверждает вход, генерацию или безопасность DNS. Сверено 17.11.2026: https://github.com/ASTRACAT2022/host-DNS/blob/main/README.md подтверждает https://dns.commonnet.work/dns-query, но не публикует постоянный bootstrap IP. Каталожный 94.181.44.39 остаётся историческим наблюдением 16.11.2026, текущим адресом владельца не подтверждён. Работоспособность не проверялась."
+  },
+  {
+    "Id": "9087e298de4243f3a66d9587e867b59b",
+    "Name": "WebShift DNS (DoH)",
+    "Enabled": true,
+    "Mode": "Doh",
+    "Servers": [
+      "31.31.207.68"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "https://d.webshiftvpn.ru/dns-query",
+    "Note": "WebShift DNS: https://dns.webshiftvpn.ru/"
+  },
+  {
+    "Id": "3de57da2b8464a05ad051793ab10587c",
+    "Name": "KeyOneDay (UDP/TCP)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "2.58.127.63"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "https://keyoneday.ru/dns.html"
+  },
+  {
+    "Id": "c42458ff77de4651ae700f97d6c508ee",
+    "Name": "dns.malw.link (UDP/TCP, резерв)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "164.5.224.81"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "https://info.dns.malw.link/setup"
+  },
+  {
+    "Id": "c34d7caffe4e4254b92cab992f296108",
+    "Name": "DNS-AI (DoH 194.87.196.13)",
+    "Enabled": true,
+    "Mode": "Doh",
+    "Servers": [
+      "194.87.196.13"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "https://dns.dns-ai.ru/dns-query",
+    "Note": "https://dns-ai.ru/"
+  },
+  {
+    "Id": "e588929cc7f0446a964deba1527599cc",
+    "Name": "GeoHide EU (UDP/TCP)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "5.175.161.3",
+      "37.221.93.128"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "https://status.dns.geohide.ru/en"
+  },
+  {
+    "Id": "3a0b063ba978452186ca5d961619ac76",
+    "Name": "GeoHide US (UDP/TCP 192.255.159.240)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "192.255.159.240"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "https://status.dns.geohide.ru/en"
   }
 ]

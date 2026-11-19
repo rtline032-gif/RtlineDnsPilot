@@ -16,10 +16,9 @@ public static class DnsSharingTests
         ProbeResult Sample(AppConfig c,bool success=true,string? key=null) => new() {ProfileId=c.Profiles[0].Id,At=now,Success=success,
             MonitoringKey=key??MonitoringTargets.Key(c),Services=[new ServiceProbeResult {ServiceId=MonitoringTargets.ChatGpt,At=now,Success=success}]};
         DnsShareCandidate Candidate(string ip="8.8.8.8") => new() {Mode=DnsMode.Udp,Servers=[ip],WorkedServices=["chatgpt"]};
-        Check("sharing excludes all 26 built-in effective configurations",()=>
+        Check("sharing excludes every built-in effective configuration",()=>
         {
-            var bases=AppConfig.Defaults().Profiles.Concat(BundledChannels.Additions()).ToArray();
-            Require(bases.Length==26,"The complete catalog is not excluded from sharing.");
+            var bases=BundledChannels.All();
             foreach(var p in bases)
             {
                 var c=Config(); c.Profiles=[JsonData.Clone(p)];c.Profiles[0].Id=Guid.NewGuid().ToString("N");c.Profiles[0].Name="Renamed";
