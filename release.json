@@ -1,6 +1,6 @@
 {
-  "version": "0.1.24",
-  "title": "RtlineDnsPilot 0.1.24 — шесть новых DNS-профилей",
-  "notes": "release-notes-0.1.24.md",
+  "version": "0.1.25",
+  "title": "RtlineDnsPilot 0.1.25 — резерв GeoHide EU через DoH",
+  "notes": "release-notes-0.1.25.md",
   "prerelease": true
 }

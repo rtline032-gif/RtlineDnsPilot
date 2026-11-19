@@ -157,10 +157,17 @@ test('body length is bounded by UTF8 bytes, malformed JSON/type/path rejected',(
 test('current and historical base configurations reject before Drive through either protocol',()=>{
   const current=JSON.parse(fs.readFileSync(path.join(__dirname,'..','..','profiles.json'),'utf8'));
   const expected=current.map(p=>[p.Mode,p.Servers,p.DnsPort,p.Mode==='Doh'?p.DohUrl:'']).concat([
+    ['Doh',['111.88.96.54','111.88.96.55'],53,'https://xbox-dns.ru/dns-query'],
+    ['Udp',['111.88.96.54','111.88.96.55'],53,''],
     ['Doh',['181.215.40.49','31.58.216.201'],53,'https://dns.bezmezhau.com/dns-query'],
     ['Udp',['181.215.40.49','31.58.216.201'],53,''],
+    ['Udp',['143.20.64.55','31.58.216.201'],53,''],
     ['Doh',['195.133.25.16'],53,'https://dns.comss.one/dns-query'],
-    ['Doh',['83.220.169.155','212.109.195.93'],53,'https://dns.comss.one/dns-query']
+    ['Doh',['141.133.184.24','141.133.183.77'],53,'https://dns.comss.one/dns-query'],
+    ['Doh',['83.220.169.155','212.109.195.93'],53,'https://dns.comss.one/dns-query'],
+    ['Doh',['109.73.193.146'],53,'https://dns.comss.one/dns-query'],
+    ['Udp',['83.220.169.155','212.109.195.93'],53,''],
+    ['Udp',['159.194.200.33','37.230.192.51'],53,'']
   ]);
   const f=fixture();const key=b=>f.api.profileKey_({Mode:b[0],Servers:b[1],DnsPort:b[2],DohUrl:b[3]});
   assert.equal(new Set(expected.map(key)).size,expected.length);

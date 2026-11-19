@@ -26,14 +26,21 @@ public static class DnsSharingTests
                 Require(DnsSharing.Select(c,[Stats(c,Sample(c))],now).Profiles.Count==0,"Built-in escaped by ID/name/address order: "+p.Name);
             }
         });
-        Check("sharing retains replaced Bezmezhau and Comss base settings without excluding different endpoints",()=>
+        Check("sharing excludes retired configurations and accepts distinct endpoints",()=>
         {
             ChannelProfile[] historical =
             [
                 new() { Mode=DnsMode.Doh, Servers=["181.215.40.49","31.58.216.201"], DohUrl="https://dns.bezmezhau.com/dns-query" },
                 new() { Mode=DnsMode.Udp, Servers=["181.215.40.49","31.58.216.201"] },
+                new() { Mode=DnsMode.Udp, Servers=["143.20.64.55","31.58.216.201"] },
                 new() { Mode=DnsMode.Doh, Servers=["195.133.25.16"], DohUrl="https://dns.comss.one/dns-query" },
-                new() { Mode=DnsMode.Doh, Servers=["83.220.169.155","212.109.195.93"], DohUrl="https://dns.comss.one/dns-query" }
+                new() { Mode=DnsMode.Doh, Servers=["141.133.184.24","141.133.183.77"], DohUrl="https://dns.comss.one/dns-query" },
+                new() { Mode=DnsMode.Doh, Servers=["83.220.169.155","212.109.195.93"], DohUrl="https://dns.comss.one/dns-query" },
+                new() { Mode=DnsMode.Doh, Servers=["109.73.193.146"], DohUrl="https://dns.comss.one/dns-query" },
+                new() { Mode=DnsMode.Udp, Servers=["83.220.169.155","212.109.195.93"] },
+                new() { Mode=DnsMode.Udp, Servers=["159.194.200.33","37.230.192.51"] },
+                new() { Mode=DnsMode.Doh, Servers=["111.88.96.54","111.88.96.55"], DohUrl="https://xbox-dns.ru/dns-query" },
+                new() { Mode=DnsMode.Udp, Servers=["111.88.96.54","111.88.96.55"] }
             ];
             foreach(var profile in historical)
             {

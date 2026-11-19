@@ -5,9 +5,47 @@ public static class BundledChannels
 {
     // Metadata-only corrections do not advance the effective-configuration
     // revision: accepting a new revision intentionally restores missing entries.
-    public const string Revision = "2026-11-19";
-    public const string PreviousRevision = "2026-11-17";
+    public const string Revision = "2026-11-19-r3";
+    public const string PreviousRevision = "2026-11-19";
     private const int OriginalDefaultCount = 3;
+    private static readonly ChannelProfile[] RetiredProfiles =
+    [
+        new() { Id = "e3ec8bf744a8fe283a37af3eff01a5a8", Name = "Xbox DNS", Mode = DnsMode.Doh,
+            Servers = ["111.88.96.54", "111.88.96.55"], DohUrl = "https://xbox-dns.ru/dns-query" },
+        new() { Id = "7d944ef142cedb5394a5d34ca882a0ed", Name = "Xbox DNS (UDP/TCP)", Servers = ["111.88.96.54", "111.88.96.55"] },
+        new() { Id = "67c906863ac4f756f8f42c7035ddd4a0", Name = "Bezmezhau (UDP/TCP)", Servers = ["181.215.40.49", "31.58.216.201"] },
+        new() { Id = "67c906863ac4f756f8f42c7035ddd4a0", Name = "Bezmezhau (UDP/TCP)", Servers = ["143.20.64.55", "31.58.216.201"] },
+        new() { Id = "9bbc21a6a4d095d4deaebcce41687df5", Name = "Comss.one (DoH)", Mode = DnsMode.Doh,
+            Servers = ["195.133.25.16"], DohUrl = "https://dns.comss.one/dns-query" },
+        new() { Id = "9bbc21a6a4d095d4deaebcce41687df5", Name = "Comss.one (DoH)", Mode = DnsMode.Doh,
+            Servers = ["141.133.184.24", "141.133.183.77"], DohUrl = "https://dns.comss.one/dns-query" },
+        new() { Id = "cb272119b9c49dbefa033fd6bb25112a", Name = "Comss.one (DoH, резерв)", Mode = DnsMode.Doh,
+            Servers = ["83.220.169.155", "212.109.195.93"], DohUrl = "https://dns.comss.one/dns-query" },
+        new() { Id = "cb272119b9c49dbefa033fd6bb25112a", Name = "Comss.one (DoH, резерв)", Mode = DnsMode.Doh,
+            Servers = ["109.73.193.146"], DohUrl = "https://dns.comss.one/dns-query" },
+        new() { Id = "11f4b140fb69f1402a081215f5b54a55", Name = "Comss.one (UDP/TCP)", Servers = ["83.220.169.155", "212.109.195.93"] },
+        new() { Id = "0ae6dc27b81e635ddd6cc1f3920feaf1", Name = "GeoHide (UDP/TCP)", Servers = ["159.194.200.33", "37.230.192.51"] }
+    ];
+
+    internal static bool IsRetiredEffectiveConfiguration(ChannelProfile profile) =>
+        RetiredProfiles.Any(retired => AppConfig.SameEffectiveConfiguration(profile, retired));
+
+    internal static bool IsRetiredProfile(ChannelProfile profile) => RetiredProfiles.Any(retired =>
+        Guid.Parse(profile.Id) == Guid.Parse(retired.Id)
+        && StringComparer.OrdinalIgnoreCase.Equals(profile.Name.Trim(), retired.Name)
+        && AppConfig.SameEffectiveConfiguration(profile, retired));
+
+    internal static void RemoveRetiredProfiles(AppConfig config)
+    {
+        var retiredIds = config.Profiles.Where(IsRetiredProfile).Select(profile => profile.Id).ToHashSet();
+        config.Profiles.RemoveAll(profile => retiredIds.Contains(profile.Id));
+        if (config.PinnedProfileId is { } preferred && retiredIds.Contains(preferred)) config.PinnedProfileId = null;
+        if (config.ManualProfileId is { } manual && retiredIds.Contains(manual))
+        {
+            config.ManualProfileId = null;
+            config.ManualUntil = null;
+        }
+    }
 
     public static List<ChannelProfile> All()
     {
@@ -39,6 +77,8 @@ public static class BundledChannels
         current.Validate();
         var result = JsonData.Clone(current);
         added = 0;
+        if (previousRevision == Revision) return result;
+        RemoveRetiredProfiles(result);
         foreach (var source in Candidates(previousRevision))
         {
             if (result.Profiles.Any(p => AppConfig.SameEffectiveConfiguration(p, source))) continue;
@@ -60,22 +100,21 @@ public static class BundledChannels
         return result;
     }
 
-    // Public profiles only. Keep the initial three and the 2026-10-22 set first;
-    // later configurations are appended, preserving revision migration boundaries.
+    // The first three also appear in AppConfig.Defaults. Put the GeoHide reserve
+    // first so the slot freed by migration goes to the requested replacement.
     private const string Catalog = """
 [
   {
-    "Id": "e3ec8bf744a8fe283a37af3eff01a5a8",
-    "Name": "Xbox DNS",
-    "Enabled": false,
+    "Id": "ac91655726d44ec18114f57640e0fda9",
+    "Name": "GeoHide EU (DoH)",
+    "Enabled": true,
     "Mode": "Doh",
     "Servers": [
-      "111.88.96.54",
-      "111.88.96.55"
+      "5.175.161.40"
     ],
     "DnsPort": 53,
-    "DohUrl": "https://xbox-dns.ru/dns-query",
-    "Note": "Сверено 17.11.2026: https://xbox-dns.ru/. Провайдер сообщает о временной неработоспособности и ограниченном доступе к серверам. В новых настройках выключен; ранее сохранённые настройки не меняются. Успех публичного HTTPS не подтверждает вход, генерацию или безопасность DNS."
+    "DohUrl": "https://eu.geohide.ru/dns-query",
+    "Note": "Европейский узел GeoHide для DNS через HTTPS. https://status.dns.geohide.ru/en"
   },
   {
     "Id": "841faa65861c6e36c6688d2094054558",
@@ -104,83 +143,6 @@ public static class BundledChannels
     "DnsPort": 53,
     "DohUrl": "https://dns.dns-ai.ru/dns-query",
     "Note": "Провайдер сообщает: порт 53 закрыт; используйте DoH. Без открытого DNS fallback. Срез публичных проверок 16.11.2026 с одного ПК: ChatGPT HTTP 200 0/3; Gemini /app HTTP 200 2/3. Успех публичного HTTPS не подтверждает вход, генерацию или безопасность DNS."
-  },
-  {
-    "Id": "7d944ef142cedb5394a5d34ca882a0ed",
-    "Name": "Xbox DNS (UDP/TCP)",
-    "Enabled": false,
-    "Mode": "Udp",
-    "Servers": [
-      "111.88.96.54",
-      "111.88.96.55"
-    ],
-    "DnsPort": 53,
-    "DohUrl": "",
-    "Note": "Сверено 17.11.2026: https://xbox-dns.ru/. Провайдер сообщает о временной неработоспособности и ограниченном доступе к серверам. В новых настройках выключен; ранее сохранённые настройки не меняются. Обычный DNS без шифрования. Успех публичного HTTPS не подтверждает вход, генерацию или безопасность DNS."
-  },
-  {
-    "Id": "67c906863ac4f756f8f42c7035ddd4a0",
-    "Name": "Bezmezhau (UDP/TCP)",
-    "Enabled": true,
-    "Mode": "Udp",
-    "Servers": [
-      "143.20.64.55",
-      "31.58.216.201"
-    ],
-    "DnsPort": 53,
-    "DohUrl": "",
-    "Note": "Сверено 17.11.2026: https://bezmezhau.com/setup. Текущая опубликованная пара: 143.20.64.55 и 31.58.216.201; DoH URL не изменился. Старый primary 181.215.40.49 больше не указан, но его отключение не доказано. Владелец предупреждает: эти IP и DoH могут не работать в РФ; отдельный адрес для РФ находится в закреплённом сообщении https://t.me/bezmezhau и при сверке не получен. Подтверждена публикация параметров, а не работоспособность в вашей сети. Вход, генерация и безопасность DNS этим не подтверждаются."
-  },
-  {
-    "Id": "9bbc21a6a4d095d4deaebcce41687df5",
-    "Name": "Comss.one (DoH)",
-    "Enabled": true,
-    "Mode": "Doh",
-    "Servers": [
-      "141.133.184.24",
-      "141.133.183.77"
-    ],
-    "DnsPort": 53,
-    "DohUrl": "https://dns.comss.one/dns-query",
-    "Note": "Сверено 17.11.2026: https://dl.comss.org/download/dns.comss.one.mobileconfig, ссылка с https://www.comss.ru/page.php?id=7315. Официальный профиль от 09.11.2026 задаёт DNSProtocol=HTTPS, ServerURL=https://dns.comss.one/dns-query и ServerAddresses 141.133.184.24, 141.133.183.77. Инструкции роутеров публикуют другой IP 109.73.193.146 — отдельный вариант в каталоге. Ни один вариант не объявляется единственным текущим или проверенным рабочим; параметры опубликованы владельцем. Проверка сертификата сохраняется, открытого DNS fallback нет. Успех публичного HTTPS не подтверждает вход, генерацию или безопасность DNS."
-  },
-  {
-    "Id": "cb272119b9c49dbefa033fd6bb25112a",
-    "Name": "Comss.one (DoH, резерв)",
-    "Enabled": true,
-    "Mode": "Doh",
-    "Servers": [
-      "109.73.193.146"
-    ],
-    "DnsPort": 53,
-    "DohUrl": "https://dns.comss.one/dns-query",
-    "Note": "Сверено 17.11.2026: https://www.comss.ru/page.php?id=13072 и https://www.comss.ru/page.php?id=12996. В инструкциях Keenetic/MikroTik для https://dns.comss.one/dns-query опубликован IP 109.73.193.146. Официальный mobileconfig задаёт другую пару 141.133.184.24, 141.133.183.77 — отдельный вариант в каталоге. Это два опубликованных варианта, а не доказанная последовательность основного и запасного серверов. Фактическая доступность не проверялась; проверка сертификата сохраняется, открытого DNS fallback нет."
-  },
-  {
-    "Id": "11f4b140fb69f1402a081215f5b54a55",
-    "Name": "Comss.one (UDP/TCP)",
-    "Enabled": false,
-    "Mode": "Udp",
-    "Servers": [
-      "83.220.169.155",
-      "212.109.195.93"
-    ],
-    "DnsPort": 53,
-    "DohUrl": "",
-    "Note": "Сверено 17.11.2026: https://www.comss.ru/page.php?id=7315. Обычный DNS на основной странице больше не рекомендуется; блок стандартных адресов скрыт с 09.11.2026. Каталожные 83.220.169.155 и 212.109.195.93 текущими проверенными публикациями не подтверждены. Историческая конфигурация сохранена, в новом наборе выключена; это не доказывает отключение конкретных адресов или порта 53. Текущие опубликованные шифрованные варианты Comss находятся в отдельных DoH-профилях. Сохранённые пользовательские настройки не перезаписываются."
-  },
-  {
-    "Id": "0ae6dc27b81e635ddd6cc1f3920feaf1",
-    "Name": "GeoHide (UDP/TCP)",
-    "Enabled": true,
-    "Mode": "Udp",
-    "Servers": [
-      "159.194.200.33",
-      "37.230.192.51"
-    ],
-    "DnsPort": 53,
-    "DohUrl": "",
-    "Note": "Сверено 22.10.2026: https://geohide.ru/. IP подтверждены официальной страницей https://status.dns.geohide.ru/en. Обычный DNS; чужие uptime-проценты не импортируются. Успех публичного HTTPS не подтверждает авторизованный Codex. Повторно 16.11.2026 с этого ПК не проверялся; сведения о доступности отсутствуют. Успех публичного HTTPS не подтверждает вход, генерацию или безопасность DNS. Сверка 17.11.2026: конфигурация https://geohide.ru/static/metadata/servers.json вернула HTTP 503; текущая региональная пара IP и её соответствие DoH URL не подтверждены. Адреса status-страницы не подставляются вместо настроек. Старые параметры сохранены без объявления их отключёнными."
   },
   {
     "Id": "167dfb96671d26c3d00d8016d92d189a",

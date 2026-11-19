@@ -1,4 +1,6 @@
-# RtlineDnsPilot 0.1.24
+# RtlineDnsPilot 0.1.25
+
+Add GeoHide EU (DoH) at `5.175.161.40` and `https://eu.geohide.ru/dns-query`. Catalog revision 2026-11-19-r3 removes both Xbox presets, three Comss.one presets, Bezmezhau (UDP/TCP) and GeoHide (UDP/TCP) from the bundled catalog. Retire a saved profile only when its catalog ID, name and effective configuration match a shipped historical entry. Preserve separate user profiles with equivalent settings. During the first window and service merge, a retired preset cannot take precedence over an equivalent user profile. Clear selection references to retired profiles and add the new reserve first. GeoHide EU UDP/TCP remains a distinct profile. Exclude former base configurations from DNS submissions.
 
 Add the six public configurations supplied in Pilot-0.1.17-test-channels.json to the built-in and import catalogs. Keep the exact transport, server order, DoH URL and enabled flags. Accept the catalog revision 2026-11-19 through the existing append-only migration. When the service is installed, reserve space for its saved profiles as well as the locally saved profiles before staging catalog additions. Keep the 32-profile limit and report the outstanding additions if space runs out.
 

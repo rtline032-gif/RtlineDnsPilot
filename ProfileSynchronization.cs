@@ -2,7 +2,7 @@ namespace NetPilot;
 
 internal static class ProfileSynchronization
 {
-    public static AppConfig ForConnection(AppConfig local, AppConfig service, bool explicitDraft)
+    public static AppConfig ForConnection(AppConfig local, AppConfig service, bool explicitDraft, bool migrateCatalog = false)
     {
         local.Validate(); service.Validate();
         if (explicitDraft)
@@ -10,10 +10,13 @@ internal static class ProfileSynchronization
             // Preserve an explicit edit, including deletions. Reuse service identities
             // for equivalent channels so existing measurements remain associated.
             var desired = JsonData.Clone(local);
+            var serviceProfiles = migrateCatalog
+                ? service.Profiles.Where(profile => !BundledChannels.IsRetiredProfile(profile)).ToList()
+                : service.Profiles;
             foreach (var profile in desired.Profiles)
             {
-                var known = service.Profiles.FirstOrDefault(p => Guid.Parse(p.Id) == Guid.Parse(profile.Id))
-                    ?? service.Profiles.FirstOrDefault(p => AppConfig.SameEffectiveConfiguration(p, profile));
+                var known = serviceProfiles.FirstOrDefault(p => Guid.Parse(p.Id) == Guid.Parse(profile.Id))
+                    ?? serviceProfiles.FirstOrDefault(p => AppConfig.SameEffectiveConfiguration(p, profile));
                 if (known is null) continue;
                 var oldId = profile.Id;
                 profile.Id = known.Id;
@@ -27,9 +30,15 @@ internal static class ProfileSynchronization
         // Old releases kept independent local/service databases. Merge missing local
         // channels once, coalescing defaults whose IDs were generated independently.
         var merged = JsonData.Clone(service);
+        if (migrateCatalog) BundledChannels.RemoveRetiredProfiles(merged);
         foreach (var profile in local.Profiles)
+        {
+            if (migrateCatalog && BundledChannels.IsRetiredProfile(profile)) continue;
             if (!merged.Profiles.Any(p => Guid.Parse(p.Id) == Guid.Parse(profile.Id) || AppConfig.SameEffectiveConfiguration(p, profile)))
                 merged.Profiles.Add(JsonData.Clone(profile));
+        }
+        // Both older lists can consist entirely of retired presets.
+        if (migrateCatalog && merged.Profiles.Count == 0) merged = BundledChannels.AddMissing(service, out _);
         if (!service.ManagementRequested && string.IsNullOrEmpty(service.AdapterId) && !string.IsNullOrEmpty(local.AdapterId))
             merged.AdapterId = local.AdapterId;
         merged.Validate();

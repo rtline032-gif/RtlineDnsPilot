@@ -110,7 +110,7 @@ public sealed class AppConfig
     {
         Profiles =
         [
-            new() { Name = "Xbox DNS", Enabled = false, Mode = DnsMode.Doh, Servers = ["111.88.96.54", "111.88.96.55"], DohUrl = "https://xbox-dns.ru/dns-query", Note = "Проверено 17.11.2026: сайт провайдера сообщает, что сервис временно не работает. В новом наборе выключен; это не доказательство постоянного отключения." },
+            new() { Name = "GeoHide EU (DoH)", Mode = DnsMode.Doh, Servers = ["5.175.161.40"], DohUrl = "https://eu.geohide.ru/dns-query", Note = "Европейский узел GeoHide для DNS через HTTPS. https://status.dns.geohide.ru/en" },
             new() { Name = "Bezmezhau", Mode = DnsMode.Doh, Servers = ["143.20.64.55", "31.58.216.201"], DohUrl = "https://dns.bezmezhau.com/dns-query", Note = "Сверено 17.11.2026: https://bezmezhau.com/setup. Основной IP изменён на 143.20.64.55. Владелец предупреждает, что общие IP и DoH могут не работать в РФ; адрес для РФ публикуется отдельно в закреплённом сообщении Telegram. Сохранённые пользовательские настройки не перезаписываются." },
             new() { Name = "DNS-AI", Mode = DnsMode.Doh, Servers = ["194.87.196.13", "45.151.102.219", "2a00:b700:5::3:62", "2a12:5940:d4ef::219"], DohUrl = "https://dns.dns-ai.ru/dns-query", Note = "Провайдер сообщает: порт 53 закрыт; используйте DoH. Без открытого DNS fallback." }
         ]

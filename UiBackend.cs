@@ -48,6 +48,7 @@ public sealed class UiBackend : IAsyncDisposable
     private bool _disposed;
     private bool _pendingConfiguration;
     private bool _mergeServiceProfiles;
+    private string? _catalogRevision;
     private string? _loadWarning;
     private string? _syncWarning;
     private int _connectionFailures;
@@ -55,6 +56,9 @@ public sealed class UiBackend : IAsyncDisposable
 
     public AppStatus Status { get; private set; }
     internal string DataDirectory=>Path.GetFullPath(_dataDirectory);
+    private string CatalogMarker => Path.Combine(_dataDirectory, "bundled-channels.json");
+    private bool CatalogMigrationPending => _includeBundledChannels && _loadWarning is null
+        && _catalogRevision != BundledChannels.Revision;
     public bool ServiceConnected => _connected;
     public bool ServiceInstalled => _service.IsInstalled;
     public DateTimeOffset? LastServiceContact {get;private set;}
@@ -111,27 +115,33 @@ public sealed class UiBackend : IAsyncDisposable
         // An existing corrupt file remains untouched for recovery.
         if (!File.Exists(_configPath) && _loadWarning is null) AtomicStore.Write(_configPath, _config);
         Status = new AppStatus { Config = JsonData.Clone(_config), State = "Наблюдение ещё не запускалось" };
-        if (includeBundledChannels && !_service.IsInstalled)
-            TryStageBundledChannels(_config, mergeServiceProfiles: !_pendingConfiguration || _mergeServiceProfiles);
+        if (includeBundledChannels && _loadWarning is null)
+        {
+            try { _catalogRevision = AtomicStore.Read<string>(CatalogMarker); }
+            catch (Exception ex) { _loadWarning = "Не удалось прочитать ревизию каталога. " + ex.Message; }
+            if (!_service.IsInstalled)
+                TryStageBundledChannels(_config, mergeServiceProfiles: !_pendingConfiguration || _mergeServiceProfiles);
+        }
     }
 
     private bool TryStageBundledChannels(AppConfig config, bool mergeServiceProfiles)
     {
-        if (!_includeBundledChannels || _loadWarning is not null) return false;
+        if (!CatalogMigrationPending) return false;
         bool staged = false;
         try
         {
-            var marker = Path.Combine(_dataDirectory, "bundled-channels.json");
-            var previousRevision = AtomicStore.Read<string>(marker);
-            if (previousRevision == BundledChannels.Revision) return false;
-            var expanded = BundledChannels.AddMissing(config, out int added, previousRevision);
-            if (added > 0)
+            var expanded = BundledChannels.AddMissing(config, out int added, _catalogRevision);
+            if (added > 0 || expanded.Profiles.Count < config.Profiles.Count)
             {
                 StageConfiguration(expanded, mergeServiceProfiles);
                 staged = true;
             }
-            var pending = BundledChannels.PendingCount(expanded, previousRevision);
-            if (pending == 0) AtomicStore.Write(marker, BundledChannels.Revision);
+            var pending = BundledChannels.PendingCount(expanded, _catalogRevision);
+            if (pending == 0)
+            {
+                AtomicStore.Write(CatalogMarker, BundledChannels.Revision);
+                _catalogRevision = BundledChannels.Revision;
+            }
             else _loadWarning = $"В каталоге обновления осталось {pending} каналов: достигнут предел 32. Существующие каналы сохранены; освободите место и перезапустите программу для добавления остальных.";
         }
         catch (Exception ex)
@@ -559,7 +569,8 @@ public sealed class UiBackend : IAsyncDisposable
         {
             try
             {
-                var desired = ProfileSynchronization.ForConnection(_config, status.Config, _pendingConfiguration && !_mergeServiceProfiles);
+                var desired = ProfileSynchronization.ForConnection(_config, status.Config,
+                    _pendingConfiguration && !_mergeServiceProfiles, migrateCatalog: CatalogMigrationPending);
                 // Saved profiles from both databases take precedence over new catalog entries.
                 if (!TryStageBundledChannels(desired, mergeServiceProfiles: false)
                     && (_pendingConfiguration || !ProfileSynchronization.SameConfig(desired, status.Config)))

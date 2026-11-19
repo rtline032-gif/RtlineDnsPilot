@@ -3,6 +3,7 @@ const LIMITS_ = Object.freeze({ Body: 96 * 1024, Profiles: 32, Attempts: 5, Dail
   Bytes: 256 * 1024, Invites: 200, PublicMinuteRequests: 10, PublicDailyRequests: 200 });
 const CATALOG_MARKER_ = 'rtlineDnsPilotSharedDnsV1';
 const BASE_PROFILES_ = [
+  ["Doh",["5.175.161.40"],53,"https://eu.geohide.ru/dns-query"],
   ["Doh",["111.88.96.54","111.88.96.55"],53,"https://xbox-dns.ru/dns-query"],
   ["Doh",["181.215.40.49","31.58.216.201"],53,"https://dns.bezmezhau.com/dns-query"],
   ["Doh",["194.87.196.13","45.151.102.219","2a00:b700:5::3:62","2a12:5940:d4ef::219"],53,"https://dns.dns-ai.ru/dns-query"],

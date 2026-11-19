@@ -54,11 +54,11 @@ public static class ServiceUpgradeTests
         Check("service update appends catalog profiles while retaining service-only channels and IDs", () =>
         {
             var config=new AppConfig {Profiles=BundledChannels.All().Take(15).ToList()};
-            var custom=JsonData.Clone(BundledChannels.All()[15]);custom.Name="Service custom channel";custom.Servers=["8.8.4.4"];custom.Note="Keep service data";
+            var custom=JsonData.Clone(BundledChannels.All()[15]);custom.Name="Service custom channel";custom.Enabled=true;custom.Servers=["8.8.4.4"];custom.Note="Keep service data";
             config.Profiles.Add(custom);config.PinnedProfileId=custom.Id;
             var before=JsonData.Encode(config.Profiles);
             var expanded=ServiceInstaller.AddUpgradeCatalog(config,null,true,out var added,out var pending);
-            Require(added==16 && pending==1 && expanded.Profiles.Count==32 && JsonData.Encode(expanded.Profiles.Take(16).ToList())==before
+            Require(added==11 && pending==0 && expanded.Profiles.Count==27 && JsonData.Encode(expanded.Profiles.Take(16).ToList())==before
                 && expanded.PinnedProfileId==custom.Id,"Service catalog update replaced an existing or colliding channel.");
             Require(expanded.Profiles.Any(p=>p.Id!=custom.Id&&AppConfig.SameEffectiveConfiguration(p,BundledChannels.All()[15])),"A new catalog configuration was lost behind a service-only ID collision.");
         });
@@ -67,7 +67,7 @@ public static class ServiceUpgradeTests
             var config=new AppConfig {Profiles=BundledChannels.All().Take(14).ToList()};
             var deleted=BundledChannels.All()[14].Id;
             var expanded=ServiceInstaller.AddUpgradeCatalog(config,null,true,out var added,out _);
-            Require(added==18 && expanded.Profiles.Count==32 && expanded.Profiles.Any(p=>p.Id==deleted),"A new service catalog did not restore a missing old configuration.");
+            Require(added==12 && expanded.Profiles.Count==26 && expanded.Profiles.Any(p=>p.Id==deleted),"A new service catalog did not restore a missing old configuration.");
             expanded.Profiles.RemoveAll(p=>p.Id==deleted);
             var repeated=ServiceInstaller.AddUpgradeCatalog(expanded,BundledChannels.Revision,true,out added,out var pending);
             Require(added==0&&pending==0&&JsonData.Encode(repeated)==JsonData.Encode(expanded),"Repair of the same version re-added or changed catalog entries.");

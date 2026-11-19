@@ -124,7 +124,8 @@ public static class DnsSharing
         var normalized = NormalizeCandidate(candidate);
         var profile = new ChannelProfile { Mode = normalized.Mode, Servers = normalized.Servers,
             DnsPort = normalized.DnsPort, DohUrl = normalized.DohUrl };
-        return Baseline.Any(baseProfile => AppConfig.SameEffectiveConfiguration(profile, baseProfile));
+        return Baseline.Any(baseProfile => AppConfig.SameEffectiveConfiguration(profile, baseProfile))
+            || BundledChannels.IsRetiredEffectiveConfiguration(profile);
     }
 
     public static string Key(DnsShareCandidate candidate)
