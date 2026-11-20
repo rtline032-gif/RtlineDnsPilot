@@ -1,4 +1,6 @@
-# RtlineDnsPilot 0.1.25
+# RtlineDnsPilot 0.1.27
+
+Catalog revision 2026-11-20 bundles both Pereval transports and the two individual GeoHide EU UDP/TCP profiles from the MTS Moscow import. Add these profiles immediately after the three initial defaults. The existing merge uses free slots, keeps equivalent saved profiles and reports pending entries at the 32-profile limit.
 
 Add GeoHide EU (DoH) at `5.175.161.40` and `https://eu.geohide.ru/dns-query`. Catalog revision 2026-11-19-r3 removes both Xbox presets, three Comss.one presets, Bezmezhau (UDP/TCP) and GeoHide (UDP/TCP) from the bundled catalog. Retire a saved profile only when its catalog ID, name and effective configuration match a shipped historical entry. Preserve separate user profiles with equivalent settings. During the first window and service merge, a retired preset cannot take precedence over an equivalent user profile. Clear selection references to retired profiles and add the new reserve first. GeoHide EU UDP/TCP remains a distinct profile. Exclude former base configurations from DNS submissions.
 

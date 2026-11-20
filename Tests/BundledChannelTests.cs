@@ -2,6 +2,17 @@ namespace NetPilot.Tests;
 
 public static class BundledChannelTests
 {
+    private static readonly ChannelProfile[] NewMtsProfiles =
+    [
+        new() { Id = "25a541fefc094bf2b7b1c9a17c2c10be", Name = "Перевал (DoH)", Mode = DnsMode.Doh,
+            Servers = ["153.80.200.170"], DohUrl = "https://free.pereval.top/dns-query" },
+        new() { Id = "0c3545c472ed42c6a12df242d493cffb", Name = "Перевал (UDP/TCP)", Servers = ["153.80.200.170"] },
+        new() { Id = "00155dbe394e41609d986280be98e40f", Name = "GeoHide EU (5.175.161.40, UDP/TCP)", Servers = ["5.175.161.40"] },
+        new() { Id = "af71c3a989f54aaea9fd6962f1a63728", Name = "GeoHide EU (143.20.64.192, UDP/TCP)", Servers = ["143.20.64.192"] }
+    ];
+
+    private static bool IsMtsProfile(ChannelProfile profile) => NewMtsProfiles.Any(p => p.Id == profile.Id);
+
     public static async Task RunAsync(Action<string, bool, string> report)
     {
         async Task Check(string name, Func<Task> test)
@@ -9,6 +20,42 @@ public static class BundledChannelTests
             try { await test(); report(name, true, ""); } catch (Exception ex) { report(name, false, ex.ToString()); }
         }
         static void Require(bool condition, string reason) { if (!condition) throw new Exception(reason); }
+        await Check("the 0.1.26 catalog adds all four MTS profiles and preserves a manual import", () =>
+        {
+            var oldCatalog = BundledChannels.All().Where(p => !IsMtsProfile(p)).ToList();
+            Require(oldCatalog.Count == 26, "The old catalog fixture is incomplete.");
+            foreach (var alreadyImported in new[] { false, true })
+            {
+                var saved = new AppConfig { Profiles = JsonData.Clone(oldCatalog) };
+                if (alreadyImported)
+                {
+                    var custom = JsonData.Clone(NewMtsProfiles[0]);
+                    custom.Id = Guid.NewGuid().ToString("N");
+                    custom.Name = "My imported profile";
+                    custom.Enabled = false;
+                    custom.Note = "Keep the user note";
+                    saved.Profiles.Add(custom);
+                }
+                saved.PinnedProfileId = saved.Profiles[0].Id;
+                saved.IntervalSeconds = 45;
+                var before = JsonData.Encode(saved);
+                var expanded = ServiceInstaller.AddUpgradeCatalog(saved, "2026-11-19-r3", true, out var added, out var pending);
+                Require(expanded.Profiles.Count == 30 && pending == 0 && added == (alreadyImported ? 3 : 4),
+                    "The previous revision did not acquire the four new network configurations.");
+                foreach (var expected in NewMtsProfiles)
+                {
+                    var profile = expanded.Profiles.Single(p => AppConfig.SameEffectiveConfiguration(p, expected));
+                    if (!alreadyImported || expected.Id != NewMtsProfiles[0].Id)
+                        Require(profile.Id == expected.Id && profile.Name == expected.Name && profile.Enabled,
+                            "A bundled MTS profile differs from the validated import.");
+                }
+                var retained = JsonData.Clone(expanded);
+                retained.Profiles = retained.Profiles.Take(saved.Profiles.Count).ToList();
+                Require(JsonData.Encode(retained) == before && JsonData.Encode(saved) == before,
+                    "The update altered the existing configuration or the user's imported profile.");
+            }
+            return Task.CompletedTask;
+        });
         await Check("catalog retirement removes both generations of the superseded stock profiles", () =>
         {
             foreach (var olderSettings in new[] { false, true })
@@ -16,7 +63,7 @@ public static class BundledChannelTests
                 var retired = FormerStock(olderSettings);
                 var saved = PreviousFullCatalog(olderSettings);
                 var updated = ServiceInstaller.AddUpgradeCatalog(saved, "2026-11-19", true, out int added, out int pending);
-                Require(updated.Profiles.Count == 26 && added == 1 && pending == 0
+                Require(updated.Profiles.Count == 30 && added == 5 && pending == 0
                     && retired.All(p => updated.Profiles.All(current => current.Id != p.Id)),
                     "One or more retired stock profiles survived the catalog migration.");
                 Require(updated.Profiles.Any(p => p.Name == "GeoHide EU (DoH)" && p.Servers.SequenceEqual(["5.175.161.40"]))
@@ -70,14 +117,14 @@ public static class BundledChannelTests
             var otherChannels = JsonData.Encode(saved.Profiles.Where(p => !retiredIds.Contains(p.Id)).ToList());
 
             var updated = ServiceInstaller.AddUpgradeCatalog(saved, "2026-11-19", true, out int added, out int pending);
-            Require(updated.Profiles.Count == 26 && added == 1 && pending == 0,
+            Require(updated.Profiles.Count == 30 && added == 5 && pending == 0,
                 "The full list did not make room for the new reserve.");
             var reserve = updated.Profiles.Single(p => p.Name == "GeoHide EU (DoH)");
             Require(reserve.Enabled && reserve.Mode == DnsMode.Doh && reserve.Servers.SequenceEqual(["5.175.161.40"])
                 && reserve.DohUrl == "https://eu.geohide.ru/dns-query", "The GeoHide EU reserve parameters differ.");
             Require(updated.ManualProfileId is null && updated.ManualUntil is null && updated.PinnedProfileId is null,
                 "Selection still names retired profiles.");
-            Require(JsonData.Encode(updated.Profiles.Where(p => p.Id != reserve.Id).ToList()) == otherChannels
+            Require(JsonData.Encode(updated.Profiles.Where(p => p.Id != reserve.Id && !IsMtsProfile(p)).ToList()) == otherChannels
                 && JsonData.Encode(saved) == before, "The catalog replacement changed unrelated channels or its input.");
             return Task.CompletedTask;
         });
@@ -89,7 +136,7 @@ public static class BundledChannelTests
             custom.DohUrl = "https://dns.example.net/dns-query";
             custom.Note = "Saved custom configuration";
             var updated = BundledChannels.AddMissing(saved, out int added, "2026-11-19");
-            Require(added == 1 && updated.Profiles.Count == 27 && updated.Profiles.Any(p => p.Name == "GeoHide EU (DoH)"),
+            Require(added == 5 && updated.Profiles.Count == 31 && updated.Profiles.Any(p => p.Name == "GeoHide EU (DoH)"),
                 "The remaining stock entries did not make room for the requested reserve.");
             Require(JsonData.Encode(updated.Profiles.Single(p => p.Id == custom.Id)) == JsonData.Encode(custom),
                 "A customized configuration was retired solely because of its name.");
@@ -108,6 +155,7 @@ public static class BundledChannelTests
                 Name = "GeoHide EU (DoH)", Mode = DnsMode.Doh, Servers = ["5.175.161.40"],
                 DohUrl = "https://eu.geohide.ru/dns-query"
             });
+            serviceConfig.Profiles.AddRange(BundledChannels.All().Where(IsMtsProfile));
             AtomicStore.Write(Path.Combine(directory, "ui-config.json"), local);
             AtomicStore.Write(Path.Combine(directory, "bundled-channels.json"), "2026-11-19");
             var service = new UiPersistenceTests.FakeService { State = new AppStatus { Config = serviceConfig } };
@@ -122,25 +170,24 @@ public static class BundledChannelTests
         {
             var directory = Path.Combine(AppContext.BaseDirectory, "test-data", "catalog-retire-existing-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
-            var config = PreviousFullCatalog();
-            config.Profiles.RemoveAll(p => p.Name == "Xbox DNS (UDP/TCP)");
-            var reserve = BundledChannels.All().Single(p => p.Name == "GeoHide EU (DoH)");
+            var config = new AppConfig { Profiles = BundledChannels.All() };
+            config.Profiles.Add(FormerStock(olderSettings: false).Single(p => p.Name == "Xbox DNS"));
+            var reserve = config.Profiles.Single(p => p.Name == "GeoHide EU (DoH)");
             reserve.Note = "Keep the existing reserve note";
-            config.Profiles.Add(reserve);
             var configPath = Path.Combine(directory, "ui-config.json");
             AtomicStore.Write(configPath, config);
             AtomicStore.Write(Path.Combine(directory, "bundled-channels.json"), "2026-11-19");
             var service = new UiPersistenceTests.FakeService { IsInstalled = false };
             await using var backend = new UiBackend(directory, service, includeBundledChannels: true);
             var persisted = AtomicStore.Read<AppConfig>(configPath)!;
-            Require(persisted.Profiles.Count == 26 && persisted.Profiles.All(p => p.Name != "Xbox DNS")
+            Require(persisted.Profiles.Count == 30 && persisted.Profiles.All(p => p.Name != "Xbox DNS")
                 && persisted.Profiles.Single(p => p.Name == reserve.Name).Note == reserve.Note,
                 "The local migration failed to persist retirement or changed the existing reserve.");
         });
         await Check("published supplemental channels validate without duplicate settings", () =>
         {
             var all = BundledChannels.AddMissing(AppConfig.Defaults(), out int added);
-            Require(added == 23 && all.Profiles.Count == 26, "Source-checked channel set is incomplete or duplicated.");
+            Require(added == 27 && all.Profiles.Count == 30, "Source-checked channel set is incomplete or duplicated.");
             var retiredIds = FormerStock(olderSettings: false).Select(p => p.Id).ToHashSet();
             Require(all.Profiles.All(p => !retiredIds.Contains(p.Id))
                 && all.Profiles.Any(p => p.Name == "GeoHide EU (UDP/TCP)"), "The bundled retirement removed a required channel or kept a retired preset.");
@@ -189,7 +236,7 @@ public static class BundledChannelTests
             var before = JsonData.Encode(config);
             var expanded = BundledChannels.AddMissing(config, out var added, BundledChannels.PreviousRevision);
             var retained = JsonData.Clone(expanded); retained.Profiles = retained.Profiles.Take(config.Profiles.Count).ToList();
-            Require(added == 22 && expanded.Profiles.Count == 26 && JsonData.Encode(retained) == before && JsonData.Encode(config) == before,
+            Require(added == 26 && expanded.Profiles.Count == 30 && JsonData.Encode(retained) == before && JsonData.Encode(config) == before,
                 "Metadata corrections changed saved provider identities, enabled flags, notes or manual/preferred selection.");
             return Task.CompletedTask;
         });
@@ -210,7 +257,7 @@ public static class BundledChannelTests
             Require(added == 2 && expanded.Profiles.Count == 32 && JsonData.Encode(retained) == before && JsonData.Encode(config) == before,
                 "A provider refresh overwrote old channels, flags, notes, custom data or manual/preferred selection.");
             Require(expanded.Profiles.Skip(config.Profiles.Count).All(p => !config.Profiles.Any(old => Guid.Parse(old.Id) == Guid.Parse(p.Id)))
-                && BundledChannels.PendingCount(expanded, "2026-11-16") == 1,
+                && BundledChannels.PendingCount(expanded, "2026-11-16") == 5,
                 "Replacement configurations reused an occupied identity or missing additions were hidden.");
             var repeated = BundledChannels.AddMissing(expanded, out added, "2026-11-16");
             Require(added == 0 && JsonData.Encode(repeated) == JsonData.Encode(expanded), "Retrying a full list modified the saved profiles.");
@@ -225,7 +272,7 @@ public static class BundledChannelTests
             config.ManualUntil = DateTimeOffset.UtcNow.AddHours(1);
             var before = JsonData.Encode(config);
             var all = BundledChannels.AddMissing(config, out var added, BundledChannels.PreviousRevision);
-            Require(added == 6 && all.Profiles.Count == 26 && all.Profiles.Any(p => AppConfig.SameEffectiveConfiguration(p, deleted)),
+            Require(added == 10 && all.Profiles.Count == 30 && all.Profiles.Any(p => AppConfig.SameEffectiveConfiguration(p, deleted)),
                 "A missing channel from the current catalogue was not added.");
             var settings = JsonData.Clone(all); settings.Profiles = settings.Profiles.Take(config.Profiles.Count).ToList();
             Require(JsonData.Encode(settings) == before && JsonData.Encode(config) == before,
@@ -283,7 +330,7 @@ public static class BundledChannelTests
             var all = BundledChannels.AddMissing(config, out var added, BundledChannels.PreviousRevision);
             Require(added == 0 && all.Profiles.Count == 32 && JsonData.Encode(all) == before && JsonData.Encode(config) == before,
                 "The capacity limit displaced or modified an existing channel.");
-            Require(BundledChannels.PendingCount(all, BundledChannels.PreviousRevision) == 26, "Missing catalog profiles were silently lost at capacity.");
+            Require(BundledChannels.PendingCount(all, BundledChannels.PreviousRevision) == 30, "Missing catalog profiles were silently lost at capacity.");
             return Task.CompletedTask;
         });
         await Check("a nearly full database appends only available slots and leaves the remaining delta pending", () =>
@@ -294,7 +341,7 @@ public static class BundledChannelTests
             var all = BundledChannels.AddMissing(config, out var added, BundledChannels.PreviousRevision);
             Require(added == 1 && all.Profiles.Count == 32 && JsonData.Encode(all.Profiles.Take(31).ToList()) == before,
                 "A partial capacity merge dropped an existing configuration.");
-            Require(BundledChannels.PendingCount(all, BundledChannels.PreviousRevision) == 25, "A partial merge hid the unadded configurations.");
+            Require(BundledChannels.PendingCount(all, BundledChannels.PreviousRevision) == 29, "A partial merge hid the unadded configurations.");
             return Task.CompletedTask;
         });
         await Check("catalog getters do not share mutable profile arrays", () =>
@@ -314,14 +361,14 @@ public static class BundledChannelTests
             string deleted;
             await using (var backend = new UiBackend(directory, service, includeBundledChannels: true))
             {
-                Require(backend.Status.Config.Profiles.Count == 26, "The migration was not loaded into the window.");
+                Require(backend.Status.Config.Profiles.Count == 30, "The migration was not loaded into the window.");
                 var edited = JsonData.Clone(backend.Status.Config);
                 deleted = edited.Profiles.Last().Id; edited.Profiles.RemoveAt(edited.Profiles.Count - 1);
                 foreach (var p in edited.Profiles) p.Enabled = false;
                 await backend.ConfigureAsync(edited);
             }
             await using var reopened = new UiBackend(directory, service, includeBundledChannels: true);
-            Require(reopened.Status.Config.Profiles.Count == 25 && reopened.Status.Config.Profiles.All(p => p.Id != deleted), "The migration silently undid an explicit deletion.");
+            Require(reopened.Status.Config.Profiles.Count == 29 && reopened.Status.Config.Profiles.All(p => p.Id != deleted), "The migration silently undid an explicit deletion.");
         });
         await Check("catalog migration reserves room for saved service channels before filling the window", async () =>
         {
@@ -354,7 +401,7 @@ public static class BundledChannelTests
     private static AppConfig PreviousFullCatalog(bool olderSettings = false)
     {
         var retired = FormerStock(olderSettings);
-        var profiles = BundledChannels.All().Where(p => p.Name != "GeoHide EU (DoH)"
+        var profiles = BundledChannels.All().Where(p => p.Name != "GeoHide EU (DoH)" && !IsMtsProfile(p)
             && retired.All(old => old.Id != p.Id)).Concat(retired).ToList();
         return new AppConfig { Profiles = profiles };
     }

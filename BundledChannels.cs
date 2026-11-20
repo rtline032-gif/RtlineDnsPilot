@@ -5,8 +5,8 @@ public static class BundledChannels
 {
     // Metadata-only corrections do not advance the effective-configuration
     // revision: accepting a new revision intentionally restores missing entries.
-    public const string Revision = "2026-11-19-r3";
-    public const string PreviousRevision = "2026-11-19";
+    public const string Revision = "2026-11-20";
+    public const string PreviousRevision = "2026-11-19-r3";
     private const int OriginalDefaultCount = 3;
     private static readonly ChannelProfile[] RetiredProfiles =
     [
@@ -100,8 +100,8 @@ public static class BundledChannels
         return result;
     }
 
-    // The first three also appear in AppConfig.Defaults. Put the GeoHide reserve
-    // first so the slot freed by migration goes to the requested replacement.
+    // The first three also appear in AppConfig.Defaults. Put the four new
+    // profiles immediately after them so updates add them before older presets.
     private const string Catalog = """
 [
   {
@@ -143,6 +143,54 @@ public static class BundledChannels
     "DnsPort": 53,
     "DohUrl": "https://dns.dns-ai.ru/dns-query",
     "Note": "Провайдер сообщает: порт 53 закрыт; используйте DoH. Без открытого DNS fallback. Срез публичных проверок 16.11.2026 с одного ПК: ChatGPT HTTP 200 0/3; Gemini /app HTTP 200 2/3. Успех публичного HTTPS не подтверждает вход, генерацию или безопасность DNS."
+  },
+  {
+    "Id": "25a541fefc094bf2b7b1c9a17c2c10be",
+    "Name": "Перевал (DoH)",
+    "Enabled": true,
+    "Mode": "Doh",
+    "Servers": [
+      "153.80.200.170"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "https://free.pereval.top/dns-query",
+    "Note": "Параметры: https://github.com/amak-tech/pereval. Публичный HTTPS ChatGPT 3/3 на другом подключении. Для обычного DNS опубликованы отдельные замеры на московской МГТС 14–16.11.2026."
+  },
+  {
+    "Id": "0c3545c472ed42c6a12df242d493cffb",
+    "Name": "Перевал (UDP/TCP)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "153.80.200.170"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "Параметры: https://github.com/amak-tech/pereval. Публичный HTTPS ChatGPT 3/3 на другом подключении. Для обычного DNS опубликованы отдельные замеры на московской МГТС 14–16.11.2026."
+  },
+  {
+    "Id": "00155dbe394e41609d986280be98e40f",
+    "Name": "GeoHide EU (5.175.161.40, UDP/TCP)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "5.175.161.40"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "Сервер GeoHide EU: https://status.dns.geohide.ru/en. Обычный DNS проверяли на московской МГТС 14–16.11.2026. Публичный HTTPS ChatGPT 2/3 на другом подключении."
+  },
+  {
+    "Id": "af71c3a989f54aaea9fd6962f1a63728",
+    "Name": "GeoHide EU (143.20.64.192, UDP/TCP)",
+    "Enabled": true,
+    "Mode": "Udp",
+    "Servers": [
+      "143.20.64.192"
+    ],
+    "DnsPort": 53,
+    "DohUrl": "",
+    "Note": "Сервер GeoHide EU: https://status.dns.geohide.ru/en. Резервный узел из замеров на московской МГТС 14–16.11.2026. Публичный HTTPS ChatGPT 3/3 на другом подключении."
   },
   {
     "Id": "167dfb96671d26c3d00d8016d92d189a",

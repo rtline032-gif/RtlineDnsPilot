@@ -40,7 +40,11 @@ const BASE_PROFILES_ = [
   ["Udp",["164.5.224.81"],53,""],
   ["Doh",["194.87.196.13"],53,"https://dns.dns-ai.ru/dns-query"],
   ["Udp",["5.175.161.3","37.221.93.128"],53,""],
-  ["Udp",["192.255.159.240"],53,""]
+  ["Udp",["192.255.159.240"],53,""],
+  ["Doh",["153.80.200.170"],53,"https://free.pereval.top/dns-query"],
+  ["Udp",["153.80.200.170"],53,""],
+  ["Udp",["5.175.161.40"],53,""],
+  ["Udp",["143.20.64.192"],53,""]
 ];
 
 // Run these owner helpers in the Apps Script editor. None is exposed by doPost/doGet.
