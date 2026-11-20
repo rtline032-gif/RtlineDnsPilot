@@ -12,7 +12,7 @@
     <RootNamespace>NetPilot</RootNamespace>
     <Title>RtlineDnsPilot</Title>
     <Product>RtlineDnsPilot</Product>
-    <Version>0.1.25</Version>
+    <Version>0.1.26</Version>
   </PropertyGroup>
   <PropertyGroup Condition="'$(LegacyWindows)' == 'true'">
     <DefineConstants>$(DefineConstants);LEGACY_WINDOWS</DefineConstants>

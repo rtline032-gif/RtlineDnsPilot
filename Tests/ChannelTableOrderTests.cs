@@ -69,8 +69,8 @@ public static class ChannelTableOrderTests
                 .SequenceEqual(new[] { config.Profiles[1].Id, config.Profiles[0].Id, config.Profiles[2].Id }),
                 "Freshness boundaries or the stable order of nonworking rows are wrong.");
         });
-        try { await CheckUiAsync(); report("sorted channel rows preserve selection focus checkboxes actions and failed-active styling", true, ""); }
-        catch (Exception ex) { report("sorted channel rows preserve selection focus checkboxes actions and failed-active styling", false, ex.GetBaseException().Message); }
+        try { await CheckUiAsync(); report("channel rows preserve selection and show the last check even after it ages", true, ""); }
+        catch (Exception ex) { report("channel rows preserve selection and show the last check even after it ages", false, ex.GetBaseException().Message); }
     }
 
     private static AppConfig Config(int count)
@@ -166,6 +166,24 @@ public static class ChannelTableOrderTests
                         Require(saved.Profiles.Select(p => p.Id).SequenceEqual(ids)
                             && JsonData.Encode(backend.Status.Statistics) == history,
                             "A sorted action persisted the display order or changed historical evidence.");
+
+                        var previous = now.AddSeconds(-MonitoringTargets.FreshnessSeconds(config) - 5);
+                        service.State.Statistics = [Stats(config, 1, previous, 80, false), Stats(config, 2, previous, 20, true)];
+                        await backend.RefreshAsync();
+                        Update();
+                        var previousTime = previous.ToLocalTime().ToString("HH:mm:ss");
+                        foreach (var column in new[] { "result", "service_chatgpt" })
+                        {
+                            Require(Equals(Row(ids[1]).Cells[column].Value, previousTime + " · Был недоступен · dns"),
+                                "An older failure lost its time or outcome in " + column + ".");
+                            Require(Equals(Row(ids[2]).Cells[column].Value, previousTime + " · Был доступен · HTTP 200"),
+                                "An older success lost its time or outcome in " + column + ".");
+                            Require(Equals(Row(ids[0]).Cells[column].Value, "Нет измерений"),
+                                "A channel with no saved check displayed an invented result.");
+                        }
+                        Require(Row(ids[1]).DefaultCellStyle.BackColor == Color.FromArgb(247, 249, 251)
+                            && Row(ids[2]).DefaultCellStyle.BackColor == Color.FromArgb(247, 249, 251),
+                            "Old measurements were colored as current availability.");
                         complete.TrySetResult();
                     }
                     catch (Exception ex) { complete.TrySetException(ex); }

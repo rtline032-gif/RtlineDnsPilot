@@ -208,7 +208,7 @@ public sealed class MainForm : Form
         _tips.SetToolTip(_rollbackApplication,"Вернуть предыдущую версию из копии последнего завершённого обновления. Доступ в интернет для отката не нужен.");
         _tips.SetToolTip(_prefer, "Предпочтительный канал используется, пока доступен. При устойчивом отказе сохраняется аварийное переключение.");
         _tips.SetToolTip(_auto, "Выбрать приоритет автовыбора и снять ручную фиксацию или предпочтение.\r\nСамый быстрый — минимальная средняя задержка DNS + HTTPS среди каналов, у которых доступны все выбранные объекты. Это время отклика, не Мбит/с.\r\nСамый стабильный — сначала доля успешных проверок, при равенстве — задержка.\r\nДля обычной оптимизации нужны 5 успешных проверок подряд и 5 минут на текущем канале. При сравнении задержек нужен выигрыш не менее 20%. Аварийное переключение сохраняется.");
-        _tips.SetToolTip(_grid, "Правая кнопка: зафиксировать канал, вернуться к авто или удалить. Синий — активный канал, зелёный/красный — свежая доступность остальных. Ошибки активного канала остаются красными. Статистика учитывает текущий набор сервисов.");
+        _tips.SetToolTip(_grid, "Правая кнопка: зафиксировать канал, вернуться к авто или удалить. Синий — активный канал, зелёный/красный — свежая доступность остальных. Ошибки активного канала остаются красными. «Был доступен» и «Был недоступен» показывают предыдущий замер. Статистика учитывает текущий набор сервисов.");
         _tips.SetToolTip(_monitorChatGpt, ChatGptProbeHelp);
         _tips.SetToolTip(_monitorGemini, "Анонимная проверка https://gemini.google.com/. Вход в аккаунт и генерация Gemini не проверяются.");
         _tips.SetToolTip(_monitorTailscale, "HTTPS-доступность https://login.tailscale.com/ через канал. Работа VPN-туннеля, устройств и RDP не проверяется; Tailscale не перенастраивается.");
@@ -771,13 +771,10 @@ public sealed class MainForm : Form
             var availability = Availability(profile.Enabled, last, status.Config, now);
             var label = availability switch
             {
-                ChannelAvailability.Disabled => "Выключен",
+                ChannelAvailability.Disabled => last is null ? "Выключен" : $"Выключен · {last.At.ToLocalTime():HH:mm:ss}",
                 ChannelAvailability.Unknown => "Нет измерений",
-                ChannelAvailability.Outdated => "Нет свежих данных",
-                ChannelAvailability.Available => "Доступен" + (last!.HttpStatus is { } code ? " · HTTP " + code : ""),
-                _ => "Недоступен" + (last!.HttpStatus is { } code ? " · HTTP " + code : string.IsNullOrWhiteSpace(last.Stage) ? "" : " · " + last.Stage)
+                _ => CheckLabel(last!.At, last.Success, last.HttpStatus, last.Stage, availability == ChannelAvailability.Outdated)
             };
-            if (last is not null) label += " · " + last.At.ToLocalTime().ToString("HH:mm:ss");
             var name = (!_backend.DnsStateUnknown && profile.Id == status.ActiveProfileId ? "● " : "") + (profile.Id == status.Config.ManualProfileId && MonitoringTargets.ManualIsActive(status.Config, now) ? "◆ " : "")
                 + (profile.Id == status.Config.PinnedProfileId ? "★ " : "") + profile.Name;
             var index = _grid.Rows.Add();
@@ -792,7 +789,7 @@ public sealed class MainForm : Form
             row.Cells["p95"].Value = statistics is not null && statistics.Samples.Any(s => s.Success) ? Milliseconds(statistics.P95Ms) : "—";
             row.Cells["count"].Value = statistics?.Samples.Count.ToString() ?? "0";
             row.Tag = profile.Id;
-            var currentDetail = last is null ? "Проверок ещё не было." : $"Последняя проверка: {last.At.ToLocalTime():dd.MM.yyyy HH:mm:ss}\r\n{(availability == ChannelAvailability.Outdated ? "Нет свежих данных. Запустите новую проверку.\r\n" : "")}{last.Stage}: {last.Detail}";
+            var currentDetail = last is null ? "Проверок ещё не было." : $"Последняя проверка: {last.At.ToLocalTime():dd.MM.yyyy HH:mm:ss}\r\n{(availability == ChannelAvailability.Outdated ? "Показан предыдущий замер. Для текущего результата запустите новую проверку.\r\n" : "")}{last.Stage}: {last.Detail}";
             row.Cells["enabled"].ToolTipText = profile.Enabled ? "Нажмите, чтобы выключить канал." : "Нажмите, чтобы включить канал.";
             row.Cells["name"].ToolTipText = profile.Name + "\r\n" + currentDetail + (!string.IsNullOrEmpty(profile.Note) ? "\r\n\r\nПримечание к профилю (не текущая проверка):\r\n" + profile.Note : "");
             row.Cells["result"].ToolTipText = currentDetail;
@@ -917,8 +914,18 @@ public sealed class MainForm : Form
         if (!enabled) return "Выключен";
         if (result is null) return "Нет измерений";
         var age = now - result.At;
-        if (age < TimeSpan.Zero || age > TimeSpan.FromSeconds(MonitoringTargets.FreshnessSeconds(config))) return "Нет свежих данных";
-        return MonitoringTargets.ServiceSummary(result) + " · " + result.At.ToLocalTime().ToString("HH:mm:ss");
+        var outdated = age < TimeSpan.Zero || age > TimeSpan.FromSeconds(MonitoringTargets.FreshnessSeconds(config));
+        return CheckLabel(result.At, result.Success, result.HttpStatus, result.Stage, outdated);
+    }
+
+    private static string CheckLabel(DateTimeOffset at, bool success, int? httpStatus, string? stage, bool outdated)
+    {
+        var outcome = success ? "Доступен" : "Недоступен";
+        if (outdated) outcome = "Был " + outcome.ToLowerInvariant();
+        var label = $"{at.ToLocalTime():HH:mm:ss} · {outcome}";
+        if (httpStatus is { } code) return label + " · HTTP " + code;
+        if (!success && !string.IsNullOrWhiteSpace(stage)) return label + " · " + stage;
+        return label;
     }
 
     private enum ChannelAvailability { Disabled, Unknown, Outdated, Available, Unavailable }
