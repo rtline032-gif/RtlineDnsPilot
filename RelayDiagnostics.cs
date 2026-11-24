@@ -136,6 +136,8 @@ internal sealed class RelayRequestTrace(RelayDiagnosticsStore store, RelayReques
     internal void Profile(ChannelProfile profile)
     {
         data.ProfileId = profile.Id; data.ProfileContext = RelayDiagnostics.Context(profile); data.Stage = "upstream";
+        data.ErrorCode = null;
+        data.UpstreamAttempts.Clear();
     }
     internal void Upstream(DnsUpstreamDiagnostic attempt)
     { if (!_finished && data.UpstreamAttempts.Count < 8) data.UpstreamAttempts.Add(RelayDiagnostics.Copy(attempt)); }

@@ -206,7 +206,7 @@ public static class BundledChannelTests
         {
             var catalog = BundledChannels.All();
             var zapret = catalog.Where(p => p.Name.StartsWith("Zapret DNS", StringComparison.Ordinal)).ToList();
-            Require(zapret.Count == 4 && zapret.All(p => !p.Enabled && p.Note.Contains("17.11.2026")
+            Require(zapret.Count == 4 && zapret.All(p => !p.Enabled && p.Note.Contains("24.11.2026")
                 && p.Note.Contains("https://dns.zapret.moe/") && p.Note.Contains("без постоянного IP")),
                 "Historical Zapret variants were dropped, enabled or presented as current fixed-IP defaults.");
             foreach (var profile in zapret)
@@ -214,7 +214,9 @@ public static class BundledChannelTests
                 Require(profile.Servers.SequenceEqual([profile.Name.Contains("2026-11") ? "38.180.241.191" : "83.217.211.149"]),
                     "A documented provider notice silently replaced a retained Zapret address.");
                 Require(profile.Mode == DnsMode.Doh
-                    ? profile.Note.Contains("статический bootstrap") && profile.Note.Contains("не доказывает отключение именно этого IP")
+                    ? profile.Note.Contains("статический bootstrap", StringComparison.OrdinalIgnoreCase)
+                        && profile.Note.Contains("https://dns.zapret.moe/reach.json")
+                        && (profile.Servers[0] != "83.217.211.149" || profile.Note.Contains("отключённый 02.11.2026"))
                     : profile.Note.Contains("53") && profile.Note.Contains("853") && profile.Note.Contains("03.11.2026"),
                     "The notice did not distinguish unsupported static DoH from the provider's closed DNS ports.");
             }

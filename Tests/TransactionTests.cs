@@ -143,13 +143,66 @@ public static class TransactionTests
             Require(manager.HasJournal && backend.Writes == writes && Directory.GetFiles(dir, "dns-session.resolved-*.json").Length == 0, "Update lost its original snapshot after archive protection failed.");
         });
 
-        await Check("service update preserves an arbitrary static DNS replacement and recovery evidence", async dir =>
+        await Check("service rollback preserves an arbitrary static DNS replacement and recovery evidence", async dir =>
         {
             var backend = new FakeBackend(StaticSnapshot()); var original = JsonData.Clone(backend.State);
             await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
             backend.State.IPv6 = Family(DnsFamily.IPv6, DnsSource.Static, ["2001:4860:4860::8844"]);
             var manager = new DnsSessionManager(dir, backend); await Reject(() => RestoreForUpdate(manager));
-            Require(manager.HasJournal && backend.State.IPv6.Servers.SequenceEqual(new[] {"2001:4860:4860::8844"}) && backend.State.IPv4.Servers.SequenceEqual(original.IPv4.Servers), "Update overwrote a static conflict or stranded the other owned family.");
+            Require(manager.HasJournal && backend.State.IPv6.Servers.SequenceEqual(new[] {"2001:4860:4860::8844"}) && backend.State.IPv4.Servers.SequenceEqual(original.IPv4.Servers), "Rollback overwrote a static conflict or stranded the other owned family.");
+        });
+
+        await Check("service upgrade retains verified manual IPv4 DNS and archives the original DHCP snapshot", async dir =>
+        {
+            var original = StaticSnapshot();
+            original.IPv4 = Family(DnsFamily.IPv4, DnsSource.Dhcp, [], ["192.0.2.53"]);
+            var backend = new FakeBackend(original);
+            await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            var manual = Family(DnsFamily.IPv4, DnsSource.Static, ["192.0.2.54", "192.0.2.55"]);
+            backend.State.IPv4 = JsonData.Clone(manual);
+            var writes = backend.Writes;
+
+            var manager = new DnsSessionManager(dir, backend);
+            await manager.RestoreForServiceUpdateAsync(preserveManualDns: true);
+
+            Require(!manager.HasJournal && !manager.Managed, "Upgrade kept an active journal after accepting verified manual DNS.");
+            Require(JsonData.Encode(manual) == JsonData.Encode(backend.State.IPv4), "Upgrade changed the user's manual DNS or address order.");
+            Require(backend.Writes == writes + 1 && backend.AppliedFamilies.Last() == DnsFamily.IPv6, "Upgrade wrote to manual IPv4 or failed to restore owned IPv6.");
+            Require(JsonData.Encode(original.IPv6) == JsonData.Encode(backend.State.IPv6), "Upgrade did not restore owned IPv6 DNS.");
+            var archive = Directory.GetFiles(dir, "dns-session.resolved-*.json").Single();
+            using var saved = JsonDocument.Parse(File.ReadAllText(archive));
+            Same(original, JsonData.Decode<AdapterDnsSnapshot>(saved.RootElement.GetProperty("Original").GetRawText()));
+        });
+
+        await Check("service upgrade rejects configured manual DNS that Windows has not applied", async dir =>
+        {
+            var backend = new FakeBackend(StaticSnapshot());
+            await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            var manual = Family(DnsFamily.IPv4, DnsSource.Static, ["192.0.2.54"], ["127.0.0.1"]);
+            backend.State.IPv4 = JsonData.Clone(manual);
+
+            var manager = new DnsSessionManager(dir, backend);
+            await Reject(() => manager.RestoreForServiceUpdateAsync(preserveManualDns: true));
+
+            Require(manager.HasJournal && !Directory.GetFiles(dir, "dns-session.resolved-*.json").Any(), "Upgrade released ownership without verified effective DNS.");
+            Require(JsonData.Encode(manual) == JsonData.Encode(backend.State.IPv4), "Upgrade overwrote unverified manual IPv4 DNS.");
+        });
+
+        await Check("service upgrade does not retire manual DNS that changed during archiving", async dir =>
+        {
+            var backend = new FakeBackend(StaticSnapshot());
+            await new DnsSessionManager(dir, backend).EnableAsync(AdapterId);
+            backend.State.IPv4 = Family(DnsFamily.IPv4, DnsSource.Static, ["192.0.2.54"]);
+            var changed = Family(DnsFamily.IPv4, DnsSource.Static, ["192.0.2.55"]);
+            var manager = new DnsSessionManager(dir, backend, path =>
+            {
+                if (path.Contains(".resolved-", StringComparison.Ordinal)) backend.State.IPv4 = JsonData.Clone(changed);
+            });
+
+            await Reject(() => manager.RestoreForServiceUpdateAsync(preserveManualDns: true));
+
+            Require(Directory.GetFiles(dir, "dns-session.resolved-*.json").Length == 1 && manager.HasJournal, "Upgrade did not retain both records after a concurrent DNS change.");
+            Require(JsonData.Encode(changed) == JsonData.Encode(backend.State.IPv4), "Upgrade overwrote the later manual IPv4 choice.");
         });
 
         await Check("service update rechecks automatic DNS after archiving before retiring ownership", async dir =>

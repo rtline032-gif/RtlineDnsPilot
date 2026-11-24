@@ -2,6 +2,6 @@ namespace NetPilot;
 
 public static class AppVersion
 {
-    public const string Current = "0.1.27";
+    public const string Current = "0.1.29";
 }
 

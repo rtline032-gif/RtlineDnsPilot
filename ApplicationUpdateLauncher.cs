@@ -118,7 +118,7 @@ internal sealed partial class ApplicationUpdateLauncher
             ValidateUpdate(request.Update!); VerifyPrevious(request); ValidateNotDowngrade(request.Update!);
             if (request.UpdateService && _host.ServiceInstalled)
             {
-                progress?.Report(new("Обновление службы. Подтвердите разрешение Windows; исходные DNS будут восстановлены."));
+                progress?.Report(new("Обновление службы. Подтвердите разрешение Windows."));
                 await _host.InstallServiceAsync(request.Update!.DirectoryPath, cancellationToken);
             }
             ValidateUpdate(request.Update!);

@@ -61,6 +61,8 @@ public static class RelayDiagnosticsTests
         await Check("TCP relay preserves a valid NXDOMAIN and records AAAA independently of IPv4 transport", async () => await Wire(true,28,3,false));
         await Check("observed UDP truncation uses unchanged TCP fallback and records its final stage", async () => await Wire(false,65,0,true));
         await Check("a rejected upstream packet retains its validation stage before local SERVFAIL", async () => await Wire(false,28,0,false,malformed:true));
+        await Check("a UDP request spanning a channel switch receives the new channel's DNS answer", () => SwitchDuringRequest(clientTcp:false));
+        await Check("a TCP request spanning a channel switch receives the new channel's DNS answer", () => SwitchDuringRequest(clientTcp:true));
         await Check("no active relay profile emits SERVFAIL with a distinct selection reason", async () =>
         {
             var store=new RelayDiagnosticsStore(); using var transport=new DnsTransport();
@@ -112,6 +114,46 @@ public static class RelayDiagnosticsTests
         });
     }
 
+    private static async Task SwitchDuringRequest(bool clientTcp)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+        using var oldServer = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        using var newServer = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        var before = new ChannelProfile { Servers = ["127.0.0.1"], DnsPort = ((IPEndPoint)oldServer.Client.LocalEndPoint!).Port };
+        var after = new ChannelProfile { Servers = ["127.0.0.1"], DnsPort = ((IPEndPoint)newServer.Client.LocalEndPoint!).Port };
+        var active = before;
+        var store = new RelayDiagnosticsStore();
+        using var transport = new DnsTransport();
+        await using var relay = new DnsRelay(transport, () => Volatile.Read(ref active), store);
+        var port = FreePort();
+        await relay.StartAsync(port, ipv6:false, deadline.Token);
+        var query = DnsWire.Query("switch.invalid");
+
+        var answering = Task.Run(async () =>
+        {
+            var oldRequest = await oldServer.ReceiveAsync(deadline.Token);
+            Volatile.Write(ref active, after);
+            await oldServer.SendAsync(Reply(oldRequest.Buffer, 3), oldRequest.RemoteEndPoint, deadline.Token);
+            var newRequest = await newServer.ReceiveAsync(deadline.Token);
+            await newServer.SendAsync(Reply(newRequest.Buffer, 0), newRequest.RemoteEndPoint, deadline.Token);
+        });
+        try
+        {
+            var result = await QueryLocalRelayAsync(clientTcp, port, query, deadline.Token);
+            DnsWire.ValidateResponse(query, result);
+            Require(DnsWire.ResponseCode(result) == 0, "The relay returned the former channel's NXDOMAIN after the switch.");
+            await Until(() => store.Snapshot().Completed == 1, deadline.Token);
+            var record = store.Snapshot().Requests.Single();
+            Require(record.ProfileId == after.Id && record.UpstreamAttempts.Single().Port == after.DnsPort,
+                "The diagnostics attributed an old channel attempt to the new channel.");
+        }
+        finally
+        {
+            deadline.Cancel();
+            try { await answering; } catch (OperationCanceledException) when (deadline.IsCancellationRequested) { }
+        }
+    }
+
     private static async Task Wire(bool clientTcp,ushort queryType,int rcode,bool truncated,bool malformed=false)
     {
         using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(8));
@@ -141,19 +183,7 @@ public static class RelayDiagnosticsTests
             var query=DnsWire.Query("do-not-retain-this-name.invalid",queryType); query[0]=0x37;query[1]=0x42;
             // An OPT record follows the question; reading QTYPE from the packet tail is incorrect.
             Array.Resize(ref query,query.Length+11); query[11]=1; int opt=query.Length-11;query[opt+2]=41;query[opt+3]=4;
-            byte[] response;
-            if(clientTcp)
-            {
-                using var client=new TcpClient(); await client.ConnectAsync(IPAddress.Loopback,relayPort,deadline.Token);
-                using var stream=client.GetStream(); var prefix=new byte[2]; BinaryPrimitives.WriteUInt16BigEndian(prefix,(ushort)query.Length);
-                await stream.WriteAsync(prefix,deadline.Token); await stream.WriteAsync(query,deadline.Token);
-                await stream.ReadExactlyAsync(prefix,deadline.Token); response=new byte[BinaryPrimitives.ReadUInt16BigEndian(prefix)]; await stream.ReadExactlyAsync(response,deadline.Token);
-            }
-            else
-            {
-                using var client=new UdpClient(); await client.SendAsync(query,new IPEndPoint(IPAddress.Loopback,relayPort),deadline.Token);
-                response=(await client.ReceiveAsync(deadline.Token)).Buffer;
-            }
+            var response=await QueryLocalRelayAsync(clientTcp,relayPort,query,deadline.Token);
             var expectedCode=malformed?2:rcode;
             DnsWire.ValidateResponse(query,response); Require(DnsWire.ResponseCode(response)==expectedCode,"Observed relay changed the DNS response.");
             await Until(()=>store.Snapshot().Completed==1,deadline.Token); await Task.WhenAll(udpServer,tcpServer);
@@ -170,6 +200,28 @@ public static class RelayDiagnosticsTests
             Require(!JsonData.Encode(snapshot).Contains("do-not-retain-this-name",StringComparison.Ordinal),"Actual QNAME entered retained metadata.");
         }
         finally {deadline.Cancel();listener.Stop();}
+    }
+
+    private static async Task<byte[]> QueryLocalRelayAsync(bool clientTcp, int port, byte[] query, CancellationToken token)
+    {
+        if (clientTcp)
+        {
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port, token);
+            using var stream = client.GetStream();
+            var prefix = new byte[2];
+            BinaryPrimitives.WriteUInt16BigEndian(prefix, (ushort)query.Length);
+            await stream.WriteAsync(prefix, token);
+            await stream.WriteAsync(query, token);
+            await stream.ReadExactlyAsync(prefix, token);
+            var response = new byte[BinaryPrimitives.ReadUInt16BigEndian(prefix)];
+            await stream.ReadExactlyAsync(response, token);
+            return response;
+        }
+
+        using var udp = new UdpClient();
+        await udp.SendAsync(query, new IPEndPoint(IPAddress.Loopback, port), token);
+        return (await udp.ReceiveAsync(token)).Buffer;
     }
 
     private static byte[] Reply(byte[] query,int rcode)

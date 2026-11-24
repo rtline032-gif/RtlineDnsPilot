@@ -9,6 +9,7 @@ namespace NetPilot;
 /// <summary>Explicit-IP DNS upstreams; there is no proxy, OS resolver, or plaintext DoH fallback.</summary>
 public sealed class DnsTransport : IDisposable
 {
+    internal static readonly TimeSpan ExchangeTimeout = TimeSpan.FromSeconds(8);
     private readonly object _sync = new();
     private readonly Dictionary<string, HttpClient> _dohClients = new(StringComparer.Ordinal);
     private bool _disposed;
@@ -29,7 +30,7 @@ public sealed class DnsTransport : IDisposable
             throw new ArgumentException("Некорректный DNS профиль.", nameof(profile));
         var addresses = profile.Servers.Select(value => IPAddress.TryParse(value, out var ip) ? ip : throw new ArgumentException("Требуется явный IP DNS сервера.")).ToArray();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(8));
+        deadline.CancelAfter(ExchangeTimeout);
         var upstream = profile.Mode == DnsMode.Doh ? "DoH" : "UDP/TCP DNS";
         try
         {

@@ -164,19 +164,19 @@ public sealed class DnsSessionManager
     }
 
     // The elevated installer calls this only after the owned service has stopped.
-    // Preserve a user's already verified automatic choice while keeping the original.
-    internal async Task RestoreForServiceUpdateAsync()
+    // Archive the original before releasing a confirmed DNS configuration.
+    internal async Task RestoreForServiceUpdateAsync(bool preserveManualDns = false)
     {
         await gate.WaitAsync();
         try
         {
             if (managed) throw new InvalidOperationException("Обновление требует сначала остановить владельца DNS-посредника.");
-            await RestoreCoreAsync(preserveAutomaticForUpdate: true);
+            await RestoreCoreAsync(preserveAutomaticForUpdate: true, preserveManualDns: preserveManualDns);
         }
         finally { gate.Release(); }
     }
 
-    private async Task RestoreCoreAsync(string? automaticResetAdapterId = null, bool preserveAutomaticForUpdate = false)
+    private async Task RestoreCoreAsync(string? automaticResetAdapterId = null, bool preserveAutomaticForUpdate = false, bool preserveManualDns = false)
     {
         if (!HasJournal)
         {
@@ -220,20 +220,29 @@ public sealed class DnsSessionManager
             {
                 var current = await ReadValidatedAsync(original.AdapterId);
                 var saved = DnsState.Family(original, family);
-                // Ordinary Restore still preserves and reports conflicts. An update
-                // never forces a new DHCP setting; it may retain a verified choice.
-                bool keepAutomatic = (automaticResetAdapterId is not null || preserveAutomaticForUpdate)
-                    && DnsState.Verified(current, Target(DnsOperation.Automatic, family));
-                if (keepAutomatic && preserveAutomaticForUpdate)
+                var configured = DnsState.Family(current, family);
+                bool restorationStarted = RestorationStarted(journal, family);
+                var automatic = Target(DnsOperation.Automatic, family);
+                DnsFamilySnapshot? retained = null;
+                if ((automaticResetAdapterId is not null || preserveAutomaticForUpdate) && DnsState.Verified(current, automatic))
+                    retained = automatic;
+                else if (preserveManualDns && journal.Operation == DnsOperation.Relay && current.Up
+                    && configured.Enabled && configured.Source == DnsSource.Static
+                    && !MatchesRecoveryConfiguration(configured, saved, journal.Operation, restorationStarted)
+                    && !configured.Servers.Any(x => IPAddress.IsLoopback(IPAddress.Parse(x)))
+                    && DnsState.Verified(current, configured))
+                    retained = JsonData.Clone(configured);
+
+                if (retained is not null && preserveAutomaticForUpdate)
                 {
                     ArchiveOriginal(journal);
                     current = await ReadValidatedAsync(original.AdapterId);
-                    if (!DnsState.Verified(current, Target(DnsOperation.Automatic, family)))
+                    if ((retained.Source == DnsSource.Static && !current.Up) || !DnsState.Verified(current, retained))
                         throw new IOException("DNS " + family + " изменился во время сохранения исходного снимка. Активный журнал сохранён; обновление остановлено.");
                 }
-                if (!keepAutomatic)
+                if (retained is null)
                 {
-                    RequireRestorable(DnsState.Family(current, family), saved, journal.Operation, RestorationStarted(journal, family));
+                    RequireRestorable(configured, saved, journal.Operation, restorationStarted);
                     if (!DnsState.Verified(current, saved))
                     {
                         // Record ownership of the ordered prefixes netsh can leave behind.
@@ -311,10 +320,13 @@ public sealed class DnsSessionManager
     }
     private static DnsFamilySnapshot Target(DnsOperation operation, DnsFamily family) => operation == DnsOperation.Relay
         ? DnsState.Loopback(family) : new() { Family = family, Enabled = true, Source = DnsSource.Dhcp, Servers = [], EffectiveServers = [] };
+    private static bool MatchesRecoveryConfiguration(DnsFamilySnapshot current, DnsFamilySnapshot original, DnsOperation operation, bool restorationStarted) =>
+        DnsState.SameConfiguration(current, original) || DnsState.SameConfiguration(current, Target(operation, original.Family))
+        || (restorationStarted && DnsState.IsOrderedStaticPrefix(current, original));
+
     private static void RequireRestorable(DnsFamilySnapshot current, DnsFamilySnapshot original, DnsOperation operation, bool restorationStarted = false)
     {
-        if (!DnsState.SameConfiguration(current, original) && !DnsState.SameConfiguration(current, Target(operation, original.Family))
-            && !(restorationStarted && DnsState.IsOrderedStaticPrefix(current, original)))
+        if (!MatchesRecoveryConfiguration(current, original, operation, restorationStarted))
             throw new InvalidOperationException("Настройки DNS " + original.Family + " отличаются от сохранённых. Текущая настройка не перезаписана; исходные DNS и журнал сохранены."
                 + (current.Enabled && current.Source == DnsSource.Dhcp ? " Если нужно оставить автоматический DNS, нажмите «DNS автоматически (DHCP)»." : ""));
     }

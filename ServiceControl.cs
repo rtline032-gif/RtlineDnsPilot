@@ -224,13 +224,13 @@ internal static partial class ServiceInstaller
         }
         var rollback=installed && !sameFiles?PrepareUpgradeRollback(previous!,package):null;
         string? rollbackId=sameFiles?previous?.RollbackSnapshotId:rollback?.Snapshot.Id;
-        if(installed) await RestoreCoreAsync(false,forServiceUpdate:true);
+        if(installed) await RestoreCoreAsync(false,forServiceUpdate:true,preserveManualDns:true);
         SecureDirectory(AppPaths.InstallDirectory);
         SecureDirectory(AppPaths.ServiceData);
         VerifyStateDirectory();
-        // An earlier interrupted session must be restored, never overwritten by installation.
+        // Resolve any interrupted DNS session before installing the package.
         var manager=new DnsSessionManager(AppPaths.ServiceData,protectFile:ProtectFileOwner);
-        if(manager.HasJournal) await manager.RestoreForServiceUpdateAsync();
+        if(manager.HasJournal) await manager.RestoreForServiceUpdateAsync(preserveManualDns:true);
         var config=AtomicStore.Read<AppConfig>(Path.Combine(AppPaths.ServiceData,"config.json"))??AppConfig.Defaults();
         var catalogMarker=Path.Combine(AppPaths.ServiceData,"bundled-channels.json");
         config=AddUpgradeCatalog(config,AtomicStore.Read<string>(catalogMarker),previous is not null,out _,out int pendingCatalog);
@@ -434,7 +434,7 @@ internal static partial class ServiceInstaller
 
     public static Task RestoreAsync(bool uninstall) => RestoreCoreAsync(uninstall);
 
-    private static async Task RestoreCoreAsync(bool uninstall, string? automaticResetAdapterId = null, bool forServiceUpdate = false)
+    private static async Task RestoreCoreAsync(bool uninstall, string? automaticResetAdapterId = null, bool forServiceUpdate = false, bool preserveManualDns = false)
     {
         RequireAdmin();
         VerifyStateDirectory();
@@ -463,7 +463,7 @@ internal static partial class ServiceInstaller
         if(automaticResetAdapterId is not null) await manager.ResetAutomaticAsync(automaticResetAdapterId);
         else if(manager.HasJournal)
         {
-            if(forServiceUpdate) await manager.RestoreForServiceUpdateAsync();
+            if(forServiceUpdate) await manager.RestoreForServiceUpdateAsync(preserveManualDns);
             else await manager.RestoreAsync();
         }
         var path=Path.Combine(AppPaths.ServiceData,"config.json");

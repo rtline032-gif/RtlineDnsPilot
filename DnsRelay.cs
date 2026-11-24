@@ -205,23 +205,47 @@ public sealed class DnsRelay : IAsyncDisposable, IMonitorDnsRelay
 
     private async Task<byte[]> ForwardAsync(byte[] query, CancellationToken token, RelayRequestTrace? trace)
     {
-        try
+        var profile = _getActive();
+        if (profile is null)
         {
-            var profile = _getActive();
-            if (profile == null) { trace?.Failure("selection", "NO_ACTIVE_PROFILE"); return DnsWire.Failure(query); }
-            trace?.Profile(profile);
-            var response = trace is null ? await _transport.ExchangeAsync(profile, query, token).ConfigureAwait(false)
-                : await _transport.ExchangeObservedAsync(profile, query, token, trace.Upstream).ConfigureAwait(false);
-            DnsWire.ValidateResponse(query, response);
-            return response;
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-        catch (Exception ex) when (ex is IOException or InvalidDataException or HttpRequestException or SocketException or OperationCanceledException or ArgumentException or ObjectDisposedException)
-        {
-            trace?.Failure("upstream", RelayDiagnostics.Error(ex, token.IsCancellationRequested));
+            trace?.Failure("selection", "NO_ACTIVE_PROFILE");
             return DnsWire.Failure(query);
         }
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(DnsTransport.ExchangeTimeout);
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            trace?.Profile(profile);
+            byte[]? answer = null;
+            try
+            {
+                var response = trace is null ? await _transport.ExchangeAsync(profile, query, deadline.Token).ConfigureAwait(false)
+                    : await _transport.ExchangeObservedAsync(profile, query, deadline.Token, trace.Upstream).ConfigureAwait(false);
+                DnsWire.ValidateResponse(query, response);
+                answer = response;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or HttpRequestException or SocketException or OperationCanceledException or ArgumentException or ObjectDisposedException)
+            { trace?.Failure("upstream", RelayDiagnostics.Error(ex, token.IsCancellationRequested)); }
+
+            token.ThrowIfCancellationRequested();
+            var selected = _getActive();
+            if (SameRoute(profile, selected)) return answer ?? DnsWire.Failure(query);
+
+            // A late answer from the old resolver can refill the Windows cache after a switch.
+            if (selected is null || deadline.IsCancellationRequested) break;
+            profile = selected;
+        }
+
+        trace?.Failure("selection", "CHANNEL_CHANGED");
+        return DnsWire.Failure(query);
     }
+
+    private static bool SameRoute(ChannelProfile before, ChannelProfile? after) => ReferenceEquals(before, after)
+        || (after is not null && before.Mode == after.Mode
+            && (before.Mode == DnsMode.Doh ? before.DohUrl == after.DohUrl : before.DnsPort == after.DnsPort)
+            && before.Servers.SequenceEqual(after.Servers, StringComparer.Ordinal));
 
     private void Track(Task task)
     {
