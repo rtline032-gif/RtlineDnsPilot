@@ -4,7 +4,13 @@ public sealed record SelectionDecision(string? ProfileId, string Reason, bool Al
 
 public static class Selection
 {
+    private static readonly TimeSpan OptimizationDelay = TimeSpan.FromMinutes(5);
+
     public static SelectionDecision Choose(AppConfig config, IReadOnlyList<ProfileStats> stats, string? current, DateTimeOffset switchedAt, DateTimeOffset now)
+        => Choose(config,stats,current,switchedAt,now,null);
+
+    internal static SelectionDecision Choose(AppConfig config, IReadOnlyList<ProfileStats> stats, string? current,
+        DateTimeOffset switchedAt, DateTimeOffset now, string? windowsDnsFailedProfile, bool systemDnsFailed = false)
     {
         stats=stats.Select(s=>MonitoringTargets.View(s,config)!).ToArray();
         var enabled = config.Profiles.Where(p => p.Enabled).Select(p => p.Id).ToHashSet();
@@ -36,19 +42,21 @@ public static class Selection
             && stats.Where(s => enabled.Contains(s.ProfileId)).All(s => Fresh(s) && !s.Last!.Success));
         if(MonitoringTargets.ManualIsActive(config,now) && enabled.Contains(config.ManualProfileId!))
             return new(config.ManualProfileId,config.ManualUntil is null?"Канал зафиксирован вручную постоянно":"Канал зафиксирован вручную до "+config.ManualUntil.Value.ToLocalTime().ToString("HH:mm:ss"),allDown);
-        if (config.PinnedProfileId is string preferred && healthy.Any(s => s.ProfileId == preferred))
+        bool coolingDown = now - switchedAt < OptimizationDelay;
+        if (!systemDnsFailed && config.PinnedProfileId is string preferred
+            && !(coolingDown && preferred == windowsDnsFailedProfile) && healthy.Any(s => s.ProfileId == preferred))
             return new(preferred, "Выбран доступный предпочтительный канал", allDown);
         var best = Ranked(healthy).FirstOrDefault();
         if (current == null || !enabled.Contains(current)) return new(best?.ProfileId, fastest
             ?"Первый измеренный доступный канал с приоритетом скорости":"Первый измеренный доступный канал с приоритетом стабильности", allDown);
-        if (active == null || !Fresh(active) || active.ConsecutiveFailures >= 3)
+        if (systemDnsFailed || active == null || !Fresh(active) || active.ConsecutiveFailures >= 3)
         {
             var alternate = Ranked(healthy.Where(s => s.ProfileId != current && ConfirmedSuccesses(s,2))).FirstOrDefault();
             return new(alternate?.ProfileId ?? current, alternate == null ? "Ожидание подтверждённого резервного канала"
                 :fastest?"Аварийное переключение на самый быстрый подтверждённый канал":"Аварийное переключение на самый стабильный подтверждённый канал", allDown);
         }
         if (!active.Last!.Success) return new(current,"Сбой "+active.ConsecutiveFailures+" из 3 — пока остаёмся на канале",allDown);
-        if (now - switchedAt < TimeSpan.FromMinutes(5)) return new(current,"Канал доступен; сравнение "+(fastest?"скорости":"стабильности")+" после "+switchedAt.AddMinutes(5).ToLocalTime().ToString("HH:mm:ss"),allDown);
+        if (coolingDown) return new(current,"Канал доступен; сравнение "+(fastest?"скорости":"стабильности")+" после "+(switchedAt+OptimizationDelay).ToLocalTime().ToString("HH:mm:ss"),allDown);
         var better = Ranked(healthy.Where(s => s.ProfileId != current && ConfirmedSuccesses(s,5)
             && (fastest?s.MeanMs<=active.MeanMs*.8
                 :s.SuccessPercent > active.SuccessPercent || s.SuccessPercent == active.SuccessPercent && s.MeanMs <= active.MeanMs * .8))).FirstOrDefault();

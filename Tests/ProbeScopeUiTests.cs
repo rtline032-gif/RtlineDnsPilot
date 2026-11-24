@@ -76,6 +76,12 @@ public static class ProbeScopeUiTests
                 var preview = Path.Combine(directory, "public-https-channels.png");
                 form.RenderSmoke(preview);
                 var grid = Field<DataGridView>(form, "_grid");
+                var selection = Field<Label>(form, "_selection").Text;
+                Require(selection.Contains("Канал для проверок") && selection.Contains("«Включить управление DNS»")
+                    && !grid.Rows[0].Cells["name"].Value!.ToString()!.StartsWith("● ", StringComparison.Ordinal)
+                    && grid.Rows[0].DefaultCellStyle.BackColor == Color.FromArgb(235, 248, 240)
+                    && grid.Columns["result"]!.HeaderText == "Проверка сайтов",
+                    "An observation-only channel looked like the system DNS or no longer showed its successful HTTPS check.");
                 var check = Field<CheckBox>(form, "_monitorChatGpt");
                 var tips = Field<ToolTip>(form, "_tips");
                 var customId = config.AdditionalTargets[0].Id;

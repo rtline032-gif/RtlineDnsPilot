@@ -104,7 +104,7 @@ public static class ChannelTableOrderTests
                 AtomicStore.Write(Path.Combine(root, "ui-config.json"), config);
                 var now = DateTimeOffset.UtcNow;
                 var service = new UiPersistenceTests.FakeService { State = new AppStatus { Config = config, ServiceVersion = AppVersion.Current,
-                    ActiveProfileId = config.Profiles[0].Id,
+                    ActiveProfileId = config.Profiles[0].Id, SystemDnsManaged = true,
                     Statistics = [Stats(config, 0, now, 10, true, false), Stats(config, 1, now, 80, true), Stats(config, 2, now, 20, false, true)] } };
                 var backend = new UiBackend(root, service);
                 using var form = new MainForm(backend, new DnsShareClient(), new ApplicationUpdateClient(new NoNetwork()),
@@ -130,6 +130,7 @@ public static class ChannelTableOrderTests
                         void Update() => typeof(MainForm).GetMethod("UpdateView", flags)!.Invoke(form, null);
                         Require(Order().SequenceEqual(new[] { ids[1], ids[2], ids[0] }), "The UI did not render the table ranking.");
                         Require(Row(ids[0]).DefaultCellStyle.BackColor == Color.FromArgb(220, 235, 253)
+                            && Row(ids[0]).Cells["name"].Value!.ToString()!.StartsWith("● ", StringComparison.Ordinal)
                             && Row(ids[0]).Cells["result"].Style.ForeColor == Color.FromArgb(169, 40, 31),
                             "A failed active channel lost its blue style or failure indicator.");
                         grid.CurrentCell = Row(ids[2]).Cells["enabled"];

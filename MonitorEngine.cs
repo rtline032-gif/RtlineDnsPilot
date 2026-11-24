@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 
 namespace NetPilot;
@@ -24,6 +26,7 @@ public sealed class MonitorEngine : IAsyncDisposable
     private readonly RelayDiagnosticsStore _relayDiagnostics = new();
     private readonly Func<IMonitorDnsRelay> _relayFactory;
     private readonly Action _flushDnsCache;
+    private readonly Func<string,CancellationToken,Task<IPAddress[]>> _resolveSystemDns = Dns.GetHostAddressesAsync;
     private IMonitorDnsRelay? _relay;
     private bool _relayRecoveryPending;
     private CancellationTokenSource? _cancel;
@@ -33,6 +36,7 @@ public sealed class MonitorEngine : IAsyncDisposable
     private List<ProfileStats> _stats = [];
     private List<LogEntry> _events = [];
     private string? _active;
+    private string? _windowsDnsFailedProfile;
     private string? _error;
     private DateTimeOffset _switched = DateTimeOffset.MinValue;
     private bool _allUnavailable;
@@ -81,13 +85,15 @@ public sealed class MonitorEngine : IAsyncDisposable
 
     internal MonitorEngine(AppConfig config,string dataDirectory,bool serviceMode,
         Func<ChannelProfile,string,TimeSpan,CancellationToken,Task<ProbeResult>> check,
-        DnsSessionManager dns,Func<IMonitorDnsRelay> relayFactory,Action flushDnsCache)
+        DnsSessionManager dns,Func<IMonitorDnsRelay> relayFactory,Action flushDnsCache,
+        Func<string,CancellationToken,Task<IPAddress[]>> resolveSystemDns)
         : this(config,dataDirectory,serviceMode,check)
     {
         if(!serviceMode) throw new ArgumentException("Подмена DNS-платформы предназначена только для режима службы.",nameof(serviceMode));
         _dns=dns??throw new ArgumentNullException(nameof(dns));
         _relayFactory=relayFactory??throw new ArgumentNullException(nameof(relayFactory));
         _flushDnsCache=flushDnsCache??throw new ArgumentNullException(nameof(flushDnsCache));
+        _resolveSystemDns=resolveSystemDns??throw new ArgumentNullException(nameof(resolveSystemDns));
     }
 
     private void LoadChartHistory()
@@ -240,7 +246,13 @@ public sealed class MonitorEngine : IAsyncDisposable
     private async Task<bool> CheckRelaySafetyCoreAsync()
     {
         if(_dns?.Managed!=true || _relay is {IsRunning:true} || _relayRecoveryPending) return false;
-        string? failure=_relay?.LastFailure;
+        await RestoreAfterDnsFailureAsync("Локальный DNS-посредник остановился",_relay?.LastFailure);
+        return true;
+    }
+
+    // Caller holds _operations and has established that the managed DNS path failed.
+    private async Task RestoreAfterDnsFailureAsync(string reason, string? detail)
+    {
         lock(_state) { _relayRecoveryPending=true; _config.ManagementRequested=false; }
         // Retire automatic activation before restoring ownership. A configuration-write failure
         // must not prevent the DNS safety attempt; retain an explicit warning for a manual retry.
@@ -250,22 +262,22 @@ public sealed class MonitorEngine : IAsyncDisposable
         {
             saveWarning=" Выключение управления не сохранено. Перед перезапуском повторите «Отключить управление / восстановить DNS». "+ex.Message;
         }
+        var cause=detail is null?"":" Причина: "+detail;
         try
         {
             await RestoreRelayAsync();
-            lock(_state) _error="Локальный DNS-посредник остановился; исходный DNS восстановлен."+(failure is null?"":" Причина: "+failure);
+            lock(_state) _error=reason+", исходный DNS восстановлен."+cause;
         }
         catch(Exception ex)
         {
-            lock(_state) _error="Локальный DNS-посредник остановился; восстановление DNS не завершено. Нажмите «Отключить управление / восстановить DNS» для повторной попытки. "
-                +ex.Message+(failure is null?"":" Причина остановки: "+failure);
+            lock(_state) _error=reason+", восстановление DNS не завершено. Нажмите «Отключить управление / восстановить DNS» для повторной попытки. "
+                +ex.Message+cause;
         }
         if(saveWarning is not null) { lock(_state) _error+=saveWarning; }
         AddEvent("error",_error!);
         try { SaveMeasurements(); }
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
         { lock(_state) _error+=" Не удалось сохранить журнал событий: "+ex.Message; }
-        return true;
     }
 
     private void CancelRound()
@@ -330,14 +342,9 @@ public sealed class MonitorEngine : IAsyncDisposable
                 s.Add(r);
             }
             _stats.RemoveAll(s=>!config.Profiles.Any(p=>p.Id==s.ProfileId));
-            var decision=Selection.Choose(config,_stats,_active,_switched,DateTimeOffset.UtcNow);
-            _selectionReason=decision.Reason;
-            if(decision.ProfileId!=_active)
-            {
-                var old=_active; _active=decision.ProfileId; _switched=DateTimeOffset.UtcNow;
-                AddEventLocked("switch", decision.Reason+": "+(config.Profiles.FirstOrDefault(p=>p.Id==_active)?.Name??"нет канала"));
-                if(_dns?.Managed==true) _flushDnsCache();
-            }
+            var now=DateTimeOffset.UtcNow;
+            var decision=Selection.Choose(config,_stats,_active,_switched,now,_windowsDnsFailedProfile);
+            ApplySelectionLocked(decision,now);
             if(allUnavailable && !_allUnavailable) AddEventLocked("outage","Все включённые каналы не прошли проверки выбранных сервисов.");
             if(hasSuccess && _allUnavailable) AddEventLocked("recovered","Доступность HTTPS восстановлена.");
             _allUnavailable=allUnavailable;
@@ -356,8 +363,91 @@ public sealed class MonitorEngine : IAsyncDisposable
                 try { await ActivateRelayAsync(token); lock(_state) _error=null; }
                 catch(Exception ex) { lock(_state) _error=ex.Message; AddEvent("error","Не удалось применить DNS: "+ex.Message); }
             }
+            if(_dns!.Managed && CurrentHealthy()) await VerifySystemDnsAsync(config,token);
         }
         SaveMeasurements();
+    }
+
+    private void ApplySelectionLocked(SelectionDecision decision, DateTimeOffset now)
+    {
+        _selectionReason=decision.Reason;
+        if(decision.ProfileId==_active) return;
+        _active=decision.ProfileId;
+        _switched=now;
+        AddEventLocked("switch",decision.Reason+": "+(_config.Profiles.FirstOrDefault(p=>p.Id==_active)?.Name??"нет канала"));
+        if(_dns?.Managed==true) _flushDnsCache();
+    }
+
+    private async Task VerifySystemDnsAsync(AppConfig config, CancellationToken token)
+    {
+        lock(_state)
+            if(_paused || MonitoringTargets.ManualIsActive(config,DateTimeOffset.UtcNow)) return;
+
+        // Direct profile probes use the upstream themselves. Check the configured
+        // monitoring hosts through the Windows resolver used by normal clients.
+        var hosts=MonitoringTargets.Selected(config).Select(target=>new Uri(target.Url).IdnHost)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var timeout=TimeSpan.FromSeconds(config.TimeoutSeconds);
+        if(await SystemDnsErrorAsync(hosts,timeout,token) is null) return;
+
+        token.ThrowIfCancellationRequested();
+        _flushDnsCache();
+        var error=await SystemDnsErrorAsync(hosts,timeout,token);
+        if(error is null)
+        {
+            AddEvent("recovered","DNS Windows снова разрешает проверяемые имена после очистки кэша.");
+            return;
+        }
+
+        bool switched;
+        lock(_state)
+        {
+            token.ThrowIfCancellationRequested();
+            if(_paused) return;
+            var now=DateTimeOffset.UtcNow;
+            var reserve=Selection.Choose(config,_stats,_active,_switched,now,null,systemDnsFailed:true);
+            switched=reserve.ProfileId is not null && reserve.ProfileId!=_active;
+            if(switched)
+            {
+                _windowsDnsFailedProfile=_active;
+                ApplySelectionLocked(reserve with {Reason="Сбой DNS Windows. Пробуем подтверждённый резерв"},now);
+            }
+        }
+        if(switched)
+        {
+            error=await SystemDnsErrorAsync(hosts,timeout,token);
+            if(error is null)
+            {
+                AddEvent("recovered","DNS Windows снова разрешает проверяемые имена через резервный канал.");
+                return;
+            }
+        }
+        token.ThrowIfCancellationRequested();
+        await RestoreAfterDnsFailureAsync("Windows не смогла разрешить проверяемое имя после повторной проверки",error);
+    }
+
+    private async Task<string?> SystemDnsErrorAsync(string[] hosts, TimeSpan timeout, CancellationToken token)
+    {
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(timeout);
+        foreach(var host in hosts)
+        {
+            try
+            {
+                var addresses=await _resolveSystemDns(host,deadline.Token).WaitAsync(deadline.Token);
+                token.ThrowIfCancellationRequested();
+                if(addresses.Length==0) return "DNS Windows не вернул IP-адреса.";
+            }
+            catch(SocketException ex) when(ex.SocketErrorCode is SocketError.HostNotFound or SocketError.TryAgain
+                or SocketError.NoRecovery or SocketError.NoData or SocketError.TimedOut)
+            {
+                token.ThrowIfCancellationRequested();
+                return "Код ошибки DNS Windows "+ex.NativeErrorCode+".";
+            }
+            catch(OperationCanceledException) when(!token.IsCancellationRequested && deadline.IsCancellationRequested)
+            { return "Истекло время ожидания DNS Windows."; }
+        }
+        return null;
     }
 
     private ChannelProfile[] DeferredProfilesLocked(AppConfig config, ChannelProfile[] enabled, DateTimeOffset now)
@@ -428,7 +518,7 @@ public sealed class MonitorEngine : IAsyncDisposable
         if(_dns!=null) await _dns.RestoreAsync();
         await DisposeRelayAsync();
         if(_serviceMode) _flushDnsCache();
-        lock(_state) _relayRecoveryPending=false;
+        lock(_state) { _relayRecoveryPending=false; _windowsDnsFailedProfile=null; }
     }
 
     private async Task DisposeRelayAsync()
@@ -492,6 +582,8 @@ public sealed class MonitorEngine : IAsyncDisposable
                 var incoming=JsonData.Clone(config); incoming.ManagementRequested=_serviceMode&&desired;
                 incoming.MonitoringPaused=_paused;
                 _config=incoming;
+                if(activeChanged || manualChanged || incoming.PinnedProfileId!=previous.PinnedProfileId)
+                    _windowsDnsFailedProfile=null;
                 // Measurements from another endpoint cannot justify applying a new one.
                 _stats.RemoveAll(s=>changed.Contains(s.ProfileId));
                 if(probeChanged)

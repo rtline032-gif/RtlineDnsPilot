@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Sockets;
 
 namespace NetPilot.Tests;
 
@@ -215,7 +216,132 @@ public static class RelayRecoveryTests
             Require(!engine.GetStatus().SystemDnsManaged && !engine.GetStatus().DnsRecoveryPending
                 && !File.Exists(Path.Combine(directory,"dns-session.json")),"An observer created a DNS ownership transaction.");
         });
+        await Check("Windows DNS failure with a successful website probe is retried after flushing the cache",async directory=>
+        {
+            await using var fixture=new Fixture(directory,paused:false);
+            await fixture.StartManagedAsync(startLoop:false);
+            int flushes=fixture.Flushes, writes=fixture.Backend.Writes;
+            fixture.Lookup=(host,_)=>
+            {
+                Require(host=="chatgpt.com","System recovery probed a host outside the enabled monitoring targets.");
+                return fixture.Flushes==flushes?HostNotFoundAsync():ResolvedAsync();
+            };
+
+            await fixture.Engine.ProbeNowAsync();
+
+            var status=fixture.Engine.GetStatus();
+            Require(fixture.SystemLookups==2 && fixture.Flushes==flushes+1,
+                "The green direct probe masked the Windows DNS failure, or the retry did not use a flushed cache.");
+            Require(status.SystemDnsManaged && status.ActiveProfileId==fixture.PrimaryId && fixture.Backend.Writes==writes
+                && status.Events.Any(e=>e.Kind=="recovered" && e.Message.Contains("Windows",StringComparison.Ordinal)),
+                "A DNS cache recovery changed channels, rewrote adapter DNS or went unrecorded.");
+        });
+        await Check("persistent Windows DNS failure switches to a confirmed reserve and verifies it",async directory=>
+        {
+            await using var fixture=new Fixture(directory,paused:false,preferPrimary:true);
+            await fixture.StartManagedAsync(startLoop:false);
+            int writes=fixture.Backend.Writes, flushes=fixture.Flushes;
+            fixture.Lookup=(_,_)=>fixture.Engine.GetStatus().ActiveProfileId==fixture.PrimaryId?HostNotFoundAsync():ResolvedAsync();
+
+            await fixture.Engine.ProbeNowAsync();
+
+            var switched=fixture.Engine.GetStatus();
+            Require(switched.SystemDnsManaged && switched.ActiveProfileId==fixture.ReserveId
+                && fixture.SystemLookups==3 && fixture.Flushes==flushes+2 && fixture.Backend.Writes==writes,
+                "A confirmed reserve was not tried through Windows or the switch rewrote the adapter unnecessarily.");
+            Require(switched.Statistics.All(s=>s.Last?.Success==true)
+                && switched.Events.Any(e=>e.Kind=="switch" && e.Message.Contains("Windows",StringComparison.Ordinal)),
+                "The switch falsified the direct measurements or was not recorded as a Windows DNS recovery.");
+            await fixture.Engine.ProbeNowAsync();
+            Require(fixture.Engine.GetStatus().ActiveProfileId==fixture.ReserveId && fixture.SystemLookups==4
+                && fixture.Flushes==flushes+2,
+                "The next green direct check immediately selected the failed preferred channel again or flushed a healthy cache.");
+        });
+        await Check("a failed Windows DNS retry and reserve restore the original DNS without automatic reactivation",async directory=>
+        {
+            await using var fixture=new Fixture(directory,paused:false,preferPrimary:true);
+            await fixture.StartManagedAsync(startLoop:false);
+            fixture.Lookup=(_,_)=>HostNotFoundAsync();
+
+            await fixture.Engine.ProbeNowAsync();
+
+            var status=fixture.Engine.GetStatus();
+            Require(fixture.SystemLookups==3 && fixture.LatestRelay.DisposeCalls==1 && fixture.Backend.IsOriginal
+                && !fixture.Session.HasJournal && !status.DnsRecoveryPending && !status.SystemDnsManaged,
+                "A running relay kept the adapter pointed at loopback even though Windows could not resolve the monitored host.");
+            Require(status.Statistics.All(s=>s.Last?.Success==true) && !status.Config.ManagementRequested
+                && !AtomicStore.Read<AppConfig>(Path.Combine(directory,"config.json"))!.ManagementRequested
+                && status.Error?.Contains("11001",StringComparison.Ordinal)==true,
+                "Recovery lost the concrete DNS error, falsified successful website probes or did not save disabled management.");
+
+            int writes=fixture.Backend.Writes;
+            await fixture.Engine.ProbeNowAsync();
+            Require(fixture.Backend.Writes==writes && fixture.FactoryCalls==1 && fixture.SystemLookups==3,
+                "Another green probe silently reactivated DNS or ran system recovery in observation mode.");
+        });
+        await Check("persistent Windows DNS failure restores the original DNS when there is no reserve",async directory=>
+        {
+            await using var fixture=new Fixture(directory,paused:false);
+            await fixture.StartManagedAsync(startLoop:false);
+            fixture.Lookup=(_,_)=>HostNotFoundAsync();
+
+            await fixture.Engine.ProbeNowAsync();
+
+            Require(fixture.SystemLookups==2 && fixture.Backend.IsOriginal && fixture.LatestRelay.DisposeCalls==1
+                && !fixture.Engine.GetStatus().Config.ManagementRequested,"A single green channel kept Windows on a failed DNS path.");
+        });
+        await Check("pausing during a system lookup cancels recovery without changing DNS",async directory=>
+        {
+            await using var fixture=new Fixture(directory,paused:false);
+            await fixture.StartManagedAsync(startLoop:false);
+            var lookupEntered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            fixture.Lookup=async (_,token)=>
+            {
+                lookupEntered.TrySetResult();
+                await Task.Delay(Timeout.Infinite,token);
+                return [];
+            };
+            int writes=fixture.Backend.Writes, flushes=fixture.Flushes;
+            var round=fixture.Engine.ProbeNowAsync();
+            await lookupEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+            await fixture.Engine.SetMonitoringAsync(false);
+            await RejectCancellationAsync(round);
+
+            var status=fixture.Engine.GetStatus();
+            Require(fixture.SystemLookups==1 && status.Config.MonitoringPaused && status.SystemDnsManaged
+                && fixture.Backend.Writes==writes && fixture.Flushes==flushes,"A cancelled system lookup was treated as a DNS failure.");
+        });
+        await Check("one-off measurements while paused do not trigger Windows DNS recovery",async directory=>
+        {
+            await using var fixture=new Fixture(directory);
+            await fixture.StartManagedAsync(startLoop:false);
+            int writes=fixture.Backend.Writes, flushes=fixture.Flushes;
+            fixture.Lookup=(_,_)=>HostNotFoundAsync();
+            await fixture.Engine.ProbeNowAsync();
+            Require(fixture.Checks==2 && fixture.SystemLookups==0 && fixture.Backend.Writes==writes
+                && fixture.Flushes==flushes && fixture.Engine.GetStatus().SystemDnsManaged,
+                "A paused diagnostic probe changed the running DNS session.");
+        });
+        await Check("manual fixation still suppresses automatic Windows DNS recovery",async directory=>
+        {
+            await using var fixture=new Fixture(directory,paused:false,preferPrimary:true);
+            await fixture.StartManagedAsync(startLoop:false);
+            var config=fixture.Engine.GetStatus().Config;
+            config.ManualProfileId=fixture.PrimaryId;
+            await fixture.Engine.ConfigureAsync(config);
+            int writes=fixture.Backend.Writes, flushes=fixture.Flushes;
+            fixture.Lookup=(_,_)=>HostNotFoundAsync();
+            await fixture.Engine.ProbeNowAsync();
+            Require(fixture.SystemLookups==0 && fixture.Backend.Writes==writes && fixture.Flushes==flushes
+                && fixture.Engine.GetStatus().ActiveProfileId==fixture.PrimaryId,
+                "Automatic Windows recovery ignored the explicit manual fixation.");
+        });
     }
+
+    private static Task<IPAddress[]> HostNotFoundAsync() =>
+        Task.FromException<IPAddress[]>(new SocketException((int)SocketError.HostNotFound));
+    private static Task<IPAddress[]> ResolvedAsync() => Task.FromResult(new[] { IPAddress.Parse("192.0.2.55") });
 
     private static AppConfig Config()
     {
@@ -233,20 +359,36 @@ public static class RelayRecoveryTests
         public readonly MonitorEngine Engine;
         public readonly TaskCompletionSource CheckEntered=new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly List<FakeRelay> _relays=[];
-        private int _checks,_flushes,_factoryCalls;
+        private int _checks,_flushes,_factoryCalls,_systemLookups;
         public int Checks=>Volatile.Read(ref _checks);
         public int Flushes=>Volatile.Read(ref _flushes);
         public int FactoryCalls=>Volatile.Read(ref _factoryCalls);
+        public int SystemLookups=>Volatile.Read(ref _systemLookups);
+        public string PrimaryId {get;}
+        public string? ReserveId {get;}
+        public Func<string,CancellationToken,Task<IPAddress[]>> Lookup {get;set;}=(_,_)=>ResolvedAsync();
         public volatile bool BlockChecks;
         public FakeRelay LatestRelay=>_relays.Last();
         public byte[]? SavedJournal;
         private readonly string _directory;
-        public Fixture(string directory,int intervalSeconds=300)
+        public Fixture(string directory,int intervalSeconds=300,bool paused=true,bool preferPrimary=false)
         {
             _directory=directory;
             Backend=new FakeBackend(Trace);Session=new DnsSessionManager(directory,Backend);
-            var config=Config();config.IntervalSeconds=intervalSeconds;
-            Engine=new MonitorEngine(config,directory,true,CheckAsync,Session,CreateRelay,()=>{Interlocked.Increment(ref _flushes);Trace.Enqueue("flush");});
+            var config=Config();config.IntervalSeconds=intervalSeconds;config.MonitoringPaused=paused;
+            PrimaryId=config.Profiles.Single().Id;
+            if(preferPrimary)
+            {
+                var reserve=AppConfig.Defaults().Profiles[1];reserve.Enabled=true;
+                config.Profiles.Add(reserve);ReserveId=reserve.Id;config.PinnedProfileId=PrimaryId;
+            }
+            Engine=new MonitorEngine(config,directory,true,CheckAsync,Session,CreateRelay,
+                ()=>{Interlocked.Increment(ref _flushes);Trace.Enqueue("flush");},ResolveSystemDnsAsync);
+        }
+        private Task<IPAddress[]> ResolveSystemDnsAsync(string host,CancellationToken token)
+        {
+            Interlocked.Increment(ref _systemLookups);
+            return Lookup(host,token);
         }
         private IMonitorDnsRelay CreateRelay()
         {
@@ -261,9 +403,10 @@ public static class RelayRecoveryTests
             token.ThrowIfCancellationRequested();
             return new ProbeResult {ProfileId=profile.Id,At=DateTimeOffset.UtcNow,Success=true,DnsMs=1,HttpsMs=2,HttpStatus=200,Stage="http",Detail="fake"};
         }
-        public async Task StartManagedAsync()
+        public async Task StartManagedAsync(bool startLoop=true)
         {
-            await Engine.StartAsync();await Engine.SetManagementAsync(true);
+            if(startLoop) await Engine.StartAsync();
+            await Engine.SetManagementAsync(true);
             SavedJournal=File.ReadAllBytes(Path.Combine(_directory,"dns-session.json"));
             Require(Session.Managed && Session.HasJournal && LatestRelay.IsRunning,"The fake managed session was not activated.");
         }

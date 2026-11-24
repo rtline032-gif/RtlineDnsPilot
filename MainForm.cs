@@ -208,7 +208,7 @@ public sealed class MainForm : Form
         _tips.SetToolTip(_rollbackApplication,"Вернуть предыдущую версию из копии последнего завершённого обновления. Доступ в интернет для отката не нужен.");
         _tips.SetToolTip(_prefer, "Предпочтительный канал используется, пока доступен. При устойчивом отказе сохраняется аварийное переключение.");
         _tips.SetToolTip(_auto, "Выбрать приоритет автовыбора и снять ручную фиксацию или предпочтение.\r\nСамый быстрый — минимальная средняя задержка DNS + HTTPS среди каналов, у которых доступны все выбранные объекты. Это время отклика, не Мбит/с.\r\nСамый стабильный — сначала доля успешных проверок, при равенстве — задержка.\r\nДля обычной оптимизации нужны 5 успешных проверок подряд и 5 минут на текущем канале. При сравнении задержек нужен выигрыш не менее 20%. Аварийное переключение сохраняется.");
-        _tips.SetToolTip(_grid, "Правая кнопка: зафиксировать канал, вернуться к авто или удалить. Синий — активный канал, зелёный/красный — свежая доступность остальных. Ошибки активного канала остаются красными. «Был доступен» и «Был недоступен» показывают предыдущий замер. Статистика учитывает текущий набор сервисов.");
+        _tips.SetToolTip(_grid, "Правая кнопка: зафиксировать канал, вернуться к авто или удалить. Синий отмечает канал DNS выбранного адаптера. Зелёный и красный показывают свежий результат проверок сайтов. Ошибки остаются красными. «Был доступен» и «Был недоступен» показывают предыдущий замер.");
         _tips.SetToolTip(_monitorChatGpt, ChatGptProbeHelp);
         _tips.SetToolTip(_monitorGemini, "Анонимная проверка https://gemini.google.com/. Вход в аккаунт и генерация Gemini не проверяются.");
         _tips.SetToolTip(_monitorTailscale, "HTTPS-доступность https://login.tailscale.com/ через канал. Работа VPN-туннеля, устройств и RDP не проверяется; Tailscale не перенастраивается.");
@@ -374,14 +374,14 @@ public sealed class MainForm : Form
         _grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "enabled", HeaderText = "Вкл.", FillWeight = 38, MinimumWidth = 50, SortMode = DataGridViewColumnSortMode.NotSortable });
         AddColumn("name", "Канал", 155, 120);
         AddColumn("protocol", "Протокол", 65, 82);
-        AddColumn("result", "Общий результат", 125, 150);
+        AddColumn("result", "Проверка сайтов", 125, 150);
         AddColumn("dns", "DNS, Σ мс", 67, 70);
         AddColumn("https", "HTTPS, Σ мс", 78, 80);
         AddColumn("success", "Успешно, %", 85, 85);
         AddColumn("p95", "p95, мс", 67, 68);
         AddColumn("count", "Измерений", 78, 100);
         layout.Controls.Add(_grid, 0, 3);
-        layout.Controls.Add(new Label { Text = "● Синий — активный канал    ◆ Ручная фиксация    ★ Предпочтение    Правая кнопка — управление каналом. Статистика и Σ мс — по выбранным сервисам.", AutoSize = true, Dock = DockStyle.Fill, ForeColor = Color.DimGray, Margin = new Padding(3, 9, 3, 0) }, 0, 4);
+        layout.Controls.Add(new Label { Text = "● Синий — DNS выбранного адаптера    ◆ Ручная фиксация    ★ Предпочтение    Правая кнопка — управление каналом. Статистика и Σ мс — по выбранным сервисам.", AutoSize = true, Dock = DockStyle.Fill, ForeColor = Color.DimGray, Margin = new Padding(3, 9, 3, 0) }, 0, 4);
         page.Controls.Add(layout);
         return page;
     }
@@ -707,6 +707,7 @@ public sealed class MainForm : Form
     private void UpdateViewCore()
     {
         var status = _backend.Status;
+        bool dnsApplied = status.SystemDnsManaged && !status.DnsRecoveryPending && !_backend.DnsStateUnknown;
         var active = _backend.DnsStateUnknown ? "не подтверждён" : status.Config.Profiles.FirstOrDefault(p => p.Id == status.ActiveProfileId)?.Name ?? "ещё не выбран";
         var adapter = status.Adapters.FirstOrDefault(a => a.Id.Equals(status.Config.AdapterId, StringComparison.OrdinalIgnoreCase))?.Name ?? "не выбран";
         if (_backend.DnsStateUnknown)
@@ -732,7 +733,7 @@ public sealed class MainForm : Form
         }
         else if (status.SystemDnsManaged)
         {
-            _headline.Text = status.Monitoring ? "DNS Windows управляется локальной службой" : "Проверки на паузе · DNS остаётся под управлением";
+            _headline.Text = status.Monitoring ? "Pilot управляет DNS выбранного адаптера" : "Проверки на паузе · DNS остаётся под управлением";
             _description.Text = $"Адаптер: {adapter}. Канал: {active}. " + (status.Monitoring
                 ? "Служба работает в фоне, в том числе при закрытом окне."
                 : "Служба продолжает пересылать DNS через этот канал. Проверки и автоматическое переключение остановлены; нажмите «Продолжить проверки» для возобновления.");
@@ -775,7 +776,8 @@ public sealed class MainForm : Form
                 ChannelAvailability.Unknown => "Нет измерений",
                 _ => CheckLabel(last!.At, last.Success, last.HttpStatus, last.Stage, availability == ChannelAvailability.Outdated)
             };
-            var name = (!_backend.DnsStateUnknown && profile.Id == status.ActiveProfileId ? "● " : "") + (profile.Id == status.Config.ManualProfileId && MonitoringTargets.ManualIsActive(status.Config, now) ? "◆ " : "")
+            bool appliedChannel = dnsApplied && profile.Id == status.ActiveProfileId;
+            var name = (appliedChannel ? "● " : "") + (profile.Id == status.Config.ManualProfileId && MonitoringTargets.ManualIsActive(status.Config, now) ? "◆ " : "")
                 + (profile.Id == status.Config.PinnedProfileId ? "★ " : "") + profile.Name;
             var index = _grid.Rows.Add();
             var row = _grid.Rows[index];
@@ -794,7 +796,7 @@ public sealed class MainForm : Form
             row.Cells["name"].ToolTipText = profile.Name + "\r\n" + currentDetail + (!string.IsNullOrEmpty(profile.Note) ? "\r\n\r\nПримечание к профилю (не текущая проверка):\r\n" + profile.Note : "");
             row.Cells["result"].ToolTipText = currentDetail;
             row.Cells["count"].ToolTipText = statistics is null ? "Проверок ещё не было." : $"В окне статистики: {statistics.Samples.Count}. Всего проверок: {statistics.TotalChecks}, успешных: {statistics.TotalSuccesses}.";
-            ApplyAvailabilityColors(row, availability, !_backend.DnsStateUnknown && profile.Id == status.ActiveProfileId);
+            ApplyAvailabilityColors(row, availability, appliedChannel);
             foreach (var target in MonitoringTargets.Selected(status.Config))
             {
                 var result = MonitoringTargets.Service(last, target.Id);
@@ -826,11 +828,15 @@ public sealed class MainForm : Form
             : preferred is null ? "автоматический — " + AutomaticModeName(status.Config.AutoSelection).ToLowerInvariant()
                 + (status.Config.AutoSelection == AutoSelectionMode.Fast ? " (время отклика DNS + HTTPS)" : " (успешность проверок)")
                 : "предпочтительный «" + preferred + "»; аварийное переключение включено";
+        var channelUse = (dnsApplied ? "DNS адаптера: " : "Канал для проверок: ") + active + ".";
+        if (!dnsApplied && !status.DnsRecoveryPending)
+            channelUse += status.Config.ManagementRequested ? " Применение DNS Pilot ожидается."
+                : " Чтобы применить канал к DNS Windows, нажмите «Включить управление DNS».";
         _selection.Text = _backend.DnsStateUnknown
             ? "Активный канал службы не подтверждён. " + (_backend.ShowingLocalDiagnostics
                 ? "Показаны результаты разовой локальной проверки; системный DNS не менялся."
                 : "Показаны последние данные службы; «Проверить локально» выполнит только разовую проверку.")
-            : (_backend.PendingServiceConfiguration ? "Настройки выбора ожидают применения: " : "Выбор: ") + selection + ". Активный канал: " + active + "."
+            : (_backend.PendingServiceConfiguration ? "Настройки выбора ожидают применения: " : "Выбор: ") + selection + ".\r\n" + channelUse
                 + (string.IsNullOrWhiteSpace(status.SelectionReason) ? "" : "\r\nПричина: " + status.SelectionReason);
         _tips.SetToolTip(_selection, _backend.DnsStateUnknown ? "Активный канал и состояние DNS подтвердятся после восстановления связи со службой."
             : string.IsNullOrWhiteSpace(status.SelectionReason) ? "Причина выбора появится после нового решения монитора." : status.SelectionReason);
