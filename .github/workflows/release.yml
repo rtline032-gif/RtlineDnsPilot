@@ -46,7 +46,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ((dotnet --version) -notmatch '^10\.') { throw 'The .NET 10 compiler is required for both source targets.' }
+          # The runner can have a newer SDK installed alongside the release compiler.
+          '{"sdk":{"version":"10.0.100","rollForward":"latestFeature","allowPrerelease":false}}' |
+            Set-Content -LiteralPath global.json -Encoding utf8NoBOM
+          $taskSdkVersion = dotnet --version
+          if ($LASTEXITCODE -ne 0 -or $taskSdkVersion -notmatch '^10\.') { throw 'Cannot select the .NET 10 SDK for the release build.' }
+          Write-Output ('Release SDK ' + $taskSdkVersion)
           $taskDotnetRoot = Split-Path -Parent (Get-Command dotnet).Source
           ./build.ps1 -Destination "$env:RUNNER_TEMP/release-builds/win-x64"
           ./build.ps1 -Windows7 -LegacySdkDirectory $taskDotnetRoot -Destination "$env:RUNNER_TEMP/release-builds/win7-x64"
